@@ -5,6 +5,7 @@ mod engine;
 mod history;
 mod hotkey;
 mod sanitize;
+mod translation_registry;
 mod window;
 
 use engine::{TranslationEngine, TranslationInput};
@@ -13,6 +14,7 @@ use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 use tauri_plugin_global_shortcut::ShortcutState;
 use tokio::sync::mpsc;
+use translation_registry::TranslationRegistry;
 
 struct EngineHandle(Mutex<Arc<dyn TranslationEngine>>);
 
@@ -52,6 +54,13 @@ struct SettingsView {
 struct LangPairView {
     lang_a: String,
     lang_b: String,
+}
+
+#[derive(serde::Serialize, Clone)]
+struct TranslateChunkEvent {
+    request_id: u64,
+    text: String,
+    done: bool,
 }
 
 fn cursor_position() -> (f64, f64) {
@@ -236,18 +245,26 @@ fn save_api_key(
 }
 
 #[tauri::command]
+fn cancel_translation(translation_registry: tauri::State<TranslationRegistry>, label: String) {
+    translation_registry.cancel(&label);
+}
+
+#[tauri::command]
 async fn start_translation(
     app: AppHandle,
     engine: tauri::State<'_, EngineHandle>,
+    translation_registry: tauri::State<'_, TranslationRegistry>,
     label: String,
     input: String,
     html: Option<String>,
+    request_id: u64,
 ) -> Result<(), String> {
     let Some(translation_input) = TranslationInput::from_capture(Some(input), html) else {
         let _ = app.emit_to(
             &label,
             "translate-chunk",
-            &engine::TranslationChunk {
+            &TranslateChunkEvent {
+                request_id,
                 text: String::new(),
                 done: true,
             },
@@ -263,12 +280,13 @@ async fn start_translation(
 
     let (tx, mut rx) = mpsc::unbounded_channel();
     let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel::<()>();
+    let cancel_tx = translation_registry.begin(&label, request_id, cancel_tx);
 
     if let Some(window) = app.get_webview_window(&label) {
-        let cancel_tx = Mutex::new(Some(cancel_tx));
+        let cancel_tx_for_window = cancel_tx.clone();
         window.on_window_event(move |event| {
             if matches!(event, WindowEvent::Destroyed) {
-                if let Some(tx) = cancel_tx.lock().unwrap().take() {
+                if let Some(tx) = cancel_tx_for_window.lock().unwrap().take() {
                     let _ = tx.send(());
                 }
             }
@@ -287,12 +305,25 @@ async fn start_translation(
     let mut completed = false;
     loop {
         tokio::select! {
+            biased;
+            _ = &mut cancel_rx => {
+                drop(rx);
+                break;
+            }
             chunk = rx.recv() => {
                 match chunk {
                     Some(chunk) => {
                         let done = chunk.done;
                         full_text.push_str(&chunk.text);
-                        let _ = app.emit_to(&label, "translate-chunk", &chunk);
+                        let _ = app.emit_to(
+                            &label,
+                            "translate-chunk",
+                            &TranslateChunkEvent {
+                                request_id,
+                                text: chunk.text,
+                                done,
+                            },
+                        );
                         if done {
                             completed = true;
                             break;
@@ -301,14 +332,11 @@ async fn start_translation(
                     None => break,
                 }
             }
-            _ = &mut cancel_rx => {
-                drop(rx);
-                break;
-            }
         }
     }
 
     let _ = engine_task.await;
+    translation_registry.finish(&label, request_id);
 
     if completed && !full_text.trim().is_empty() {
         let record = history::HistoryRecord::new(&source_body, full_text, is_html, engine_name);
@@ -336,6 +364,7 @@ pub fn run() {
         .manage(HistoryReplayState::default())
         .manage(window::popup::PopupCounter::default())
         .manage(window::popup::PopupStack::default())
+        .manage(TranslationRegistry::default())
         .invoke_handler(tauri::generate_handler![
             engine_name,
             sanitize_html,
@@ -351,7 +380,8 @@ pub fn run() {
             set_engine_choice,
             set_model_override,
             save_api_key,
-            start_translation
+            start_translation,
+            cancel_translation
         ])
         .setup(|app| {
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);

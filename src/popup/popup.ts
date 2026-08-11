@@ -4,6 +4,7 @@ import { marked } from "marked";
 import { safeStreamPreview } from "./preview";
 
 type TranslationChunk = {
+  request_id: number;
   text: string;
   done: boolean;
 };
@@ -63,6 +64,14 @@ let isHtmlMode = false;
 let outputBuffer = "";
 let pastedHtml: string | null = null;
 let lastAttempt: PendingAttempt | null = null;
+let isTranslating = false;
+let currentRequestId = 0;
+let nextRequestId = 1;
+
+function setTranslating(active: boolean) {
+  isTranslating = active;
+  translateButton.textContent = active ? "停止" : "翻訳";
+}
 
 async function renderMarkdown(source: string): Promise<string> {
   const html = await marked.parse(source);
@@ -84,6 +93,9 @@ function showState(state: "loading" | "error" | "translation" | "idle") {
 }
 
 async function startTranslation(input: string, html: string | null, kind: SourceKind) {
+  const requestId = nextRequestId++;
+  currentRequestId = requestId;
+
   lastAttempt = { input, html, kind };
   outputBuffer = "";
   isHtmlMode = Boolean(html && html.trim().length > 0);
@@ -96,12 +108,17 @@ async function startTranslation(input: string, html: string | null, kind: Source
   statusState.textContent = "▍生成中";
   toggleSourceButton.disabled = true;
   copyButton.disabled = true;
+  setTranslating(true);
 
   showState("translation");
 
   try {
-    await invoke("start_translation", { label, input, html });
+    await invoke("start_translation", { label, input, html, requestId });
   } catch (error) {
+    if (currentRequestId !== requestId) {
+      return;
+    }
+    setTranslating(false);
     errorMessage.textContent = error instanceof Error ? error.message : String(error);
     showState("error");
   }
@@ -139,6 +156,9 @@ async function handlePaste(event: ClipboardEvent) {
 }
 
 function triggerManualTranslate() {
+  if (isTranslating) {
+    return;
+  }
   const text = currentInputText();
   if (text.length === 0) {
     return;
@@ -161,7 +181,15 @@ pasteInput.addEventListener("keydown", (event) => {
   }
 });
 
-translateButton.addEventListener("click", () => triggerManualTranslate());
+translateButton.addEventListener("click", () => {
+  if (isTranslating) {
+    void invoke("cancel_translation", { label });
+    setTranslating(false);
+    statusState.textContent = "■ 停止しました";
+    return;
+  }
+  triggerManualTranslate();
+});
 
 async function focusPasteInput() {
   await getCurrentWindow().setFocus();
@@ -210,8 +238,11 @@ async function runReplay() {
 function listenForTranslationChunks() {
   getCurrentWindow().listen<TranslationChunk>("translate-chunk", (event) => {
     const chunk = event.payload;
+    if (chunk.request_id !== currentRequestId) {
+      return;
+    }
     if (chunk.done) {
-      void finishTranslation();
+      void finishTranslation(chunk.request_id);
       return;
     }
     outputBuffer += chunk.text;
@@ -219,10 +250,14 @@ function listenForTranslationChunks() {
   });
 }
 
-async function finishTranslation() {
+async function finishTranslation(requestId: number) {
   const rendered = isHtmlMode
     ? await invoke<string>("sanitize_html", { html: outputBuffer })
     : await renderMarkdown(outputBuffer);
+
+  if (requestId !== currentRequestId) {
+    return;
+  }
 
   translatedText.hidden = true;
   translatedText.textContent = "";
@@ -231,6 +266,7 @@ async function finishTranslation() {
   statusState.textContent = "✓ 完了";
   toggleSourceButton.disabled = false;
   copyButton.disabled = false;
+  setTranslating(false);
 }
 
 retryButton.addEventListener("click", () => {

@@ -26,10 +26,13 @@ pub struct OpenAiEngine {
 }
 
 impl OpenAiEngine {
-    pub fn from_environment() -> Result<Self, MissingApiKeyError> {
+    pub fn from_environment(model_override: Option<&str>) -> Result<Self, MissingApiKeyError> {
         let api_key = resolve_api_key().ok_or(MissingApiKeyError)?;
-        let model =
-            std::env::var(MODEL_ENV_OVERRIDE).unwrap_or_else(|_| DEFAULT_MODEL.to_string());
+        let model = model_override
+            .filter(|m| !m.trim().is_empty())
+            .map(|m| m.to_string())
+            .or_else(|| std::env::var(MODEL_ENV_OVERRIDE).ok())
+            .unwrap_or_else(|| DEFAULT_MODEL.to_string());
 
         Ok(Self {
             api_key,
@@ -180,5 +183,31 @@ fn keychain_api_key() -> Option<String> {
         None
     } else {
         Some(trimmed.to_string())
+    }
+}
+
+pub fn has_stored_key() -> bool {
+    keychain_api_key().is_some()
+}
+
+pub fn store_api_key(key: &str) -> Result<(), String> {
+    let status = std::process::Command::new("security")
+        .args([
+            "add-generic-password",
+            "-U",
+            "-a",
+            "trapop",
+            "-s",
+            KEYCHAIN_SERVICE,
+            "-w",
+            key,
+        ])
+        .status()
+        .map_err(|e| e.to_string())?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err("Keychain へのAPIキー保存に失敗しました".to_string())
     }
 }

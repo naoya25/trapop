@@ -43,8 +43,12 @@ pub trait TranslationEngine: Send + Sync {
     async fn translate(&self, input: &TranslationInput, tx: UnboundedSender<TranslationChunk>);
 }
 
-pub fn resolve() -> Box<dyn TranslationEngine> {
-    match openai::OpenAiEngine::from_environment() {
+pub fn resolve(choice: &str, model_override: Option<&str>) -> Box<dyn TranslationEngine> {
+    if choice == "mock" {
+        return Box::new(mock::MockEngine);
+    }
+
+    match openai::OpenAiEngine::from_environment(model_override) {
         Ok(engine) => Box::new(engine),
         Err(_) => Box::new(mock::MockEngine),
     }

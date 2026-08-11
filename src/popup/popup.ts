@@ -288,9 +288,23 @@ toggleSourceButton.addEventListener("click", () => {
   toggleSourceButton.textContent = showingSource ? "訳文を表示" : "原文を表示";
 });
 
+async function copyRichTranslation() {
+  const htmlFlavor = translatedHtml.innerHTML;
+  const plainFlavor = isHtmlMode ? (translatedHtml.textContent ?? "") : outputBuffer;
+
+  try {
+    const item = new ClipboardItem({
+      "text/html": new Blob([htmlFlavor], { type: "text/html" }),
+      "text/plain": new Blob([plainFlavor], { type: "text/plain" }),
+    });
+    await navigator.clipboard.write([item]);
+  } catch {
+    await navigator.clipboard.writeText(plainFlavor);
+  }
+}
+
 copyButton.addEventListener("click", () => {
-  const text = isHtmlMode ? (translatedHtml.textContent ?? "") : outputBuffer;
-  void navigator.clipboard.writeText(text);
+  void copyRichTranslation();
 });
 
 document.addEventListener("keydown", (event) => {

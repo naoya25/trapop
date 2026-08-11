@@ -10,13 +10,14 @@ type HistoryRecord = {
   engine: string;
 };
 
-type EngineChoice = "auto" | "openai" | "mock";
+type EngineChoice = "auto" | "openai" | "gemini" | "mock";
 
 type SettingsView = {
   hotkey: string;
   engine_choice: EngineChoice;
   model_override: string | null;
-  has_api_key: boolean;
+  has_openai_key: boolean;
+  has_gemini_key: boolean;
   effective_engine_name: string;
 };
 
@@ -125,9 +126,16 @@ const hotkeyDisplay = document.getElementById("hotkey-display") as HTMLElement;
 const hotkeyChangeButton = document.getElementById("hotkey-change-button") as HTMLButtonElement;
 const hotkeyHint = document.getElementById("hotkey-hint") as HTMLElement;
 const engineSelect = document.getElementById("engine-select") as HTMLSelectElement;
-const apiKeyInput = document.getElementById("api-key-input") as HTMLInputElement;
-const apiKeySaveButton = document.getElementById("api-key-save-button") as HTMLButtonElement;
-const apiKeyStatus = document.getElementById("api-key-status") as HTMLElement;
+const openaiApiKeyInput = document.getElementById("openai-api-key-input") as HTMLInputElement;
+const openaiApiKeySaveButton = document.getElementById(
+  "openai-api-key-save-button",
+) as HTMLButtonElement;
+const openaiApiKeyStatus = document.getElementById("openai-api-key-status") as HTMLElement;
+const geminiApiKeyInput = document.getElementById("gemini-api-key-input") as HTMLInputElement;
+const geminiApiKeySaveButton = document.getElementById(
+  "gemini-api-key-save-button",
+) as HTMLButtonElement;
+const geminiApiKeyStatus = document.getElementById("gemini-api-key-status") as HTMLElement;
 const modelInput = document.getElementById("model-input") as HTMLInputElement;
 const modelSaveButton = document.getElementById("model-save-button") as HTMLButtonElement;
 
@@ -144,7 +152,8 @@ async function loadSettings() {
   hotkeyDisplay.textContent = acceleratorToLabel(settings.hotkey);
   engineSelect.value = settings.engine_choice;
   modelInput.value = settings.model_override ?? "";
-  apiKeyStatus.textContent = settings.has_api_key ? "登録済み: ●●●●●●●●" : "未登録";
+  openaiApiKeyStatus.textContent = settings.has_openai_key ? "登録済み: ●●●●●●●●" : "未登録";
+  geminiApiKeyStatus.textContent = settings.has_gemini_key ? "登録済み: ●●●●●●●●" : "未登録";
 }
 
 const MODIFIER_CODES = new Set([
@@ -216,18 +225,33 @@ engineSelect.addEventListener("change", () => {
   void invoke("set_engine_choice", { choice: engineSelect.value }).then(() => loadSettings());
 });
 
-apiKeySaveButton.addEventListener("click", () => {
-  const key = apiKeyInput.value;
+openaiApiKeySaveButton.addEventListener("click", () => {
+  const key = openaiApiKeyInput.value;
   if (!key.trim()) {
     return;
   }
-  invoke("save_api_key", { key })
+  invoke("save_api_key", { provider: "openai", key })
     .then(() => {
-      apiKeyInput.value = "";
+      openaiApiKeyInput.value = "";
       return loadSettings();
     })
     .catch((error: unknown) => {
-      apiKeyStatus.textContent = `保存に失敗しました: ${String(error)}`;
+      openaiApiKeyStatus.textContent = `保存に失敗しました: ${String(error)}`;
+    });
+});
+
+geminiApiKeySaveButton.addEventListener("click", () => {
+  const key = geminiApiKeyInput.value;
+  if (!key.trim()) {
+    return;
+  }
+  invoke("save_api_key", { provider: "gemini", key })
+    .then(() => {
+      geminiApiKeyInput.value = "";
+      return loadSettings();
+    })
+    .catch((error: unknown) => {
+      geminiApiKeyStatus.textContent = `保存に失敗しました: ${String(error)}`;
     });
 });
 

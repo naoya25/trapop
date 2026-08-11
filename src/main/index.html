@@ -37,25 +37,41 @@
       <div class="settings-group">
         <label class="settings-label" for="engine-select">翻訳エンジン</label>
         <select class="settings-select" id="engine-select">
-          <option value="auto">auto(キーがあれば openai)</option>
+          <option value="auto">auto(キーがあれば openai、無ければ gemini)</option>
           <option value="openai">openai</option>
+          <option value="gemini">gemini</option>
           <option value="mock">mock</option>
         </select>
       </div>
 
       <div class="settings-group">
-        <label class="settings-label" for="api-key-input">OpenAI API キー</label>
+        <label class="settings-label" for="openai-api-key-input">OpenAI API キー</label>
         <div class="settings-row">
           <input
             class="settings-input"
-            id="api-key-input"
+            id="openai-api-key-input"
             type="password"
             placeholder="sk-..."
             autocomplete="off"
           />
-          <button class="btn" id="api-key-save-button">保存</button>
+          <button class="btn" id="openai-api-key-save-button">保存</button>
         </div>
-        <p class="settings-hint" id="api-key-status"></p>
+        <p class="settings-hint" id="openai-api-key-status"></p>
+      </div>
+
+      <div class="settings-group">
+        <label class="settings-label" for="gemini-api-key-input">Gemini API キー</label>
+        <div class="settings-row">
+          <input
+            class="settings-input"
+            id="gemini-api-key-input"
+            type="password"
+            placeholder="AIza..."
+            autocomplete="off"
+          />
+          <button class="btn" id="gemini-api-key-save-button">保存</button>
+        </div>
+        <p class="settings-hint" id="gemini-api-key-status"></p>
       </div>
 
       <div class="settings-group">

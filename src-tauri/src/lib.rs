@@ -1,3 +1,4 @@
+#[allow(dead_code)]
 mod capture;
 mod config;
 mod engine;
@@ -33,22 +34,7 @@ fn build_engine(config: &config::AppConfig) -> Arc<dyn TranslationEngine> {
 }
 
 #[derive(Default)]
-struct CaptureState(Mutex<HashMap<String, CaptureOutcome>>);
-
-#[derive(Default)]
 struct HistoryReplayState(Mutex<HashMap<String, history::HistoryRecord>>);
-
-#[derive(serde::Serialize, Clone)]
-#[serde(tag = "status", rename_all = "snake_case")]
-enum CaptureOutcome {
-    Ok {
-        result: capture::CaptureResult,
-    },
-    Error {
-        message: String,
-        is_accessibility_error: bool,
-    },
-}
 
 #[derive(serde::Serialize)]
 struct SettingsView {
@@ -58,22 +44,14 @@ struct SettingsView {
     has_openai_key: bool,
     has_gemini_key: bool,
     effective_engine_name: &'static str,
+    lang_a: String,
+    lang_b: String,
 }
 
-fn capture_error_message(code: &str) -> (String, bool) {
-    match code {
-        "accessibility_permission_required" => (
-            "アクセシビリティ権限が必要です。下のボタンから設定を開き、TraPoP を許可してから \
-             再試行してください。"
-                .to_string(),
-            true,
-        ),
-        "clipboard_empty" => (
-            "コピーしてからホットキーを押してください(⌘C → ⌥⇧⌘P)。".to_string(),
-            false,
-        ),
-        other => (format!("選択テキストの取得に失敗しました: {other}"), false),
-    }
+#[derive(serde::Serialize)]
+struct LangPairView {
+    lang_a: String,
+    lang_b: String,
 }
 
 fn cursor_position() -> (f64, f64) {
@@ -90,68 +68,21 @@ fn cursor_position() -> (f64, f64) {
 }
 
 fn trigger_capture(app: &AppHandle) {
-    let app = app.clone();
-    std::thread::spawn(move || {
+    let app_for_main = app.clone();
+    let _ = app.run_on_main_thread(move || {
         let (x, y) = cursor_position();
-        let capture_result = capture::capture_selection();
+        window::hide_main_window_before_popup(&app_for_main);
 
-        let app_for_main = app.clone();
-        let _ = app.run_on_main_thread(move || {
-            window::hide_main_window_before_popup(&app_for_main);
-
-            let label = match window::popup::spawn(
-                &app_for_main,
-                x,
-                y,
-                window::popup::PopupMode::Capture,
-            ) {
-                Ok(label) => label,
-                Err(e) => {
-                    eprintln!("[trapop] popup spawn failed: {e}");
-                    return;
-                }
-            };
-
-            let outcome = match capture_result {
-                Ok(result) => CaptureOutcome::Ok { result },
-                Err(code) => {
-                    let (message, is_accessibility_error) = capture_error_message(&code);
-                    CaptureOutcome::Error {
-                        message,
-                        is_accessibility_error,
-                    }
-                }
-            };
-
-            app_for_main
-                .state::<CaptureState>()
-                .0
-                .lock()
-                .unwrap()
-                .insert(label.clone(), outcome.clone());
-
-            let _ = app_for_main.emit_to(&label, "capture-ready", &outcome);
-        });
+        if let Err(e) = window::popup::spawn(&app_for_main, x, y, window::popup::PopupMode::Paste)
+        {
+            eprintln!("[trapop] popup spawn failed: {e}");
+        }
     });
-}
-
-#[tauri::command]
-fn get_capture(state: tauri::State<CaptureState>, label: String) -> Option<CaptureOutcome> {
-    state.0.lock().unwrap().get(&label).cloned()
 }
 
 #[tauri::command]
 fn engine_name(engine: tauri::State<EngineHandle>) -> &'static str {
     engine.current().name()
-}
-
-#[tauri::command]
-fn open_accessibility_settings() -> Result<(), String> {
-    std::process::Command::new("open")
-        .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -207,7 +138,38 @@ fn get_settings(app: AppHandle, engine: tauri::State<EngineHandle>) -> SettingsV
         has_openai_key: engine::openai::has_stored_key(),
         has_gemini_key: engine::gemini::has_stored_key(),
         effective_engine_name: engine.current().name(),
+        lang_a: cfg.lang_a,
+        lang_b: cfg.lang_b,
     }
+}
+
+#[tauri::command]
+fn get_lang_pair(app: AppHandle) -> LangPairView {
+    let cfg = config::load(&app);
+    LangPairView {
+        lang_a: cfg.lang_a,
+        lang_b: cfg.lang_b,
+    }
+}
+
+#[tauri::command]
+fn set_lang_pair(app: AppHandle, lang_a: String, lang_b: String) -> Result<(), String> {
+    let mut cfg = config::load(&app);
+    cfg.lang_a = lang_a;
+    cfg.lang_b = lang_b;
+    config::save(&app, &cfg)
+}
+
+#[tauri::command]
+fn save_popup_size(app: AppHandle, width: f64, height: f64) -> Result<(), String> {
+    if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
+        return Err("不正なポップアップサイズです".to_string());
+    }
+
+    let mut cfg = config::load(&app);
+    cfg.popup_width = width;
+    cfg.popup_height = height;
+    config::save(&app, &cfg)
 }
 
 #[tauri::command]
@@ -293,6 +255,7 @@ async fn start_translation(
         return Ok(());
     };
 
+    let cfg = config::load(&app);
     let engine_handle = engine.current();
     let engine_name = engine_handle.name();
     let is_html = translation_input.is_html();
@@ -312,8 +275,12 @@ async fn start_translation(
         });
     }
 
+    let lang_a = cfg.lang_a.clone();
+    let lang_b = cfg.lang_b.clone();
     let engine_task = tokio::spawn(async move {
-        engine_handle.translate(&translation_input, tx).await;
+        engine_handle
+            .translate(&translation_input, &lang_a, &lang_b, tx)
+            .await;
     });
 
     let mut full_text = String::new();
@@ -366,20 +333,20 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_opener::init())
-        .manage(CaptureState::default())
         .manage(HistoryReplayState::default())
         .manage(window::popup::PopupCounter::default())
         .manage(window::popup::PopupStack::default())
         .invoke_handler(tauri::generate_handler![
-            get_capture,
             engine_name,
-            open_accessibility_settings,
             sanitize_html,
             list_history,
             clear_history,
             open_history_popup,
             get_history_replay,
             get_settings,
+            get_lang_pair,
+            set_lang_pair,
+            save_popup_size,
             set_hotkey,
             set_engine_choice,
             set_model_override,

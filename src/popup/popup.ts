@@ -1,23 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-
-type CaptureFlavor = {
-  flavor: string;
-  content: string;
-};
-
-type CaptureSource = "selection" | "clipboard";
-
-type CaptureResult = {
-  source: CaptureSource;
-  plain_text: string | null;
-  html: string | null;
-  flavors: CaptureFlavor[];
-};
-
-type CaptureOutcome =
-  | { status: "ok"; result: CaptureResult }
-  | { status: "error"; message: string; is_accessibility_error: boolean };
+import { marked } from "marked";
 
 type TranslationChunk = {
   text: string;
@@ -33,16 +16,32 @@ type HistoryRecord = {
   engine: string;
 };
 
-const label = getCurrentWindow().label;
-const popupMode = new URLSearchParams(window.location.search).get("mode") === "replay"
-  ? "replay"
-  : "capture";
+type LangPairView = {
+  lang_a: string;
+  lang_b: string;
+};
 
+type SourceKind = "pasted" | "typed";
+
+type PendingAttempt = {
+  input: string;
+  html: string | null;
+  kind: SourceKind;
+};
+
+marked.use({ breaks: true });
+
+const label = getCurrentWindow().label;
+const popupMode =
+  new URLSearchParams(window.location.search).get("mode") === "replay" ? "replay" : "paste";
+
+const pasteForm = document.getElementById("paste-form") as HTMLElement;
+const pasteInput = document.getElementById("paste-input") as HTMLDivElement;
+const translateButton = document.getElementById("translate-button") as HTMLButtonElement;
 const stateLoading = document.getElementById("state-loading") as HTMLElement;
 const stateError = document.getElementById("state-error") as HTMLElement;
 const errorMessage = document.getElementById("error-message") as HTMLElement;
 const retryButton = document.getElementById("retry-button") as HTMLButtonElement;
-const openSettingsButton = document.getElementById("open-settings-button") as HTMLButtonElement;
 const translation = document.getElementById("translation") as HTMLElement;
 const sourceText = document.getElementById("source-text") as HTMLPreElement;
 const translatedText = document.getElementById("translated-text") as HTMLPreElement;
@@ -53,49 +52,42 @@ const toggleSourceButton = document.getElementById("toggle-source") as HTMLButto
 const copyButton = document.getElementById("copy-translation") as HTMLButtonElement;
 const headerMode = document.querySelector(".header__mode") as HTMLElement;
 
-const SOURCE_LABEL: Record<CaptureSource, string> = {
-  selection: "選択テキストから翻訳",
-  clipboard: "クリップボードから翻訳",
+const SOURCE_LABEL: Record<SourceKind, string> = {
+  pasted: "貼り付け",
+  typed: "入力",
 };
 
 let showingSource = false;
 let isHtmlMode = false;
 let outputBuffer = "";
+let pastedHtml: string | null = null;
+let lastAttempt: PendingAttempt | null = null;
 
-function stripTagsPreview(html: string): string {
-  return html.replace(/<[^>]+>/g, "");
+async function renderMarkdown(source: string): Promise<string> {
+  const html = await marked.parse(source);
+  return invoke<string>("sanitize_html", { html });
 }
 
-async function renderEngineName() {
-  const name = await invoke<string>("engine_name");
-  headerMode.textContent = `${name} · 和訳`;
+async function renderModeLabel() {
+  const [engine, langPair] = await Promise.all([
+    invoke<string>("engine_name"),
+    invoke<LangPairView>("get_lang_pair"),
+  ]);
+  headerMode.textContent = `${engine} · ${langPair.lang_a}⇔${langPair.lang_b}`;
 }
 
-function showState(state: "loading" | "error" | "translation") {
+function showState(state: "loading" | "error" | "translation" | "idle") {
   stateLoading.hidden = state !== "loading";
   stateError.hidden = state !== "error";
   translation.hidden = state !== "translation";
 }
 
-async function waitForCapture(): Promise<CaptureOutcome> {
-  const maxAttempts = 40;
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const outcome = await invoke<CaptureOutcome | null>("get_capture", { label });
-    if (outcome) {
-      return outcome;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 80));
-  }
-  return {
-    status: "error",
-    message: "選択テキストの取得がタイムアウトしました。",
-    is_accessibility_error: false,
-  };
-}
-
-async function startTranslation(input: string, html: string | null) {
+async function startTranslation(input: string, html: string | null, kind: SourceKind) {
+  lastAttempt = { input, html, kind };
   outputBuffer = "";
   isHtmlMode = Boolean(html && html.trim().length > 0);
+  sourceText.textContent = input;
+  statusSource.textContent = SOURCE_LABEL[kind];
   translatedText.textContent = "";
   translatedText.hidden = false;
   translatedHtml.hidden = true;
@@ -104,28 +96,75 @@ async function startTranslation(input: string, html: string | null) {
   toggleSourceButton.disabled = true;
   copyButton.disabled = true;
 
-  await invoke("start_translation", { label, input, html });
+  showState("translation");
+
+  try {
+    await invoke("start_translation", { label, input, html });
+  } catch (error) {
+    errorMessage.textContent = error instanceof Error ? error.message : String(error);
+    showState("error");
+  }
 }
 
-async function runCapture() {
-  showState("loading");
+function currentInputText(): string {
+  return pasteInput.innerText.trim();
+}
 
-  const outcome = await waitForCapture();
-
-  if (outcome.status === "error") {
-    errorMessage.textContent = outcome.message;
-    openSettingsButton.hidden = !outcome.is_accessibility_error;
-    showState("error");
+async function handlePaste(event: ClipboardEvent) {
+  event.preventDefault();
+  const clipboardData = event.clipboardData;
+  if (!clipboardData) {
     return;
   }
 
-  const { result } = outcome;
-  const input = result.plain_text ?? "";
-  sourceText.textContent = input;
-  statusSource.textContent = SOURCE_LABEL[result.source];
+  const html = clipboardData.getData("text/html");
+  const plain = clipboardData.getData("text/plain");
 
-  showState("translation");
-  await startTranslation(input, result.html);
+  let sanitizedHtml: string | null = null;
+  if (html.trim().length > 0) {
+    sanitizedHtml = await invoke<string>("sanitize_html", { html });
+    pasteInput.innerHTML = sanitizedHtml;
+  } else {
+    pasteInput.textContent = plain;
+  }
+  pastedHtml = sanitizedHtml;
+
+  const plainForTranslation = plain.trim().length > 0 ? plain : pasteInput.innerText;
+  if (plainForTranslation.trim().length === 0) {
+    return;
+  }
+
+  await startTranslation(plainForTranslation, sanitizedHtml, "pasted");
+}
+
+function triggerManualTranslate() {
+  const text = currentInputText();
+  if (text.length === 0) {
+    return;
+  }
+  void startTranslation(text, pastedHtml, pastedHtml ? "pasted" : "typed");
+}
+
+pasteInput.addEventListener("paste", (event) => {
+  void handlePaste(event);
+});
+
+pasteInput.addEventListener("input", () => {
+  pastedHtml = null;
+});
+
+pasteInput.addEventListener("keydown", (event) => {
+  if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+    event.preventDefault();
+    triggerManualTranslate();
+  }
+});
+
+translateButton.addEventListener("click", () => triggerManualTranslate());
+
+async function focusPasteInput() {
+  await getCurrentWindow().setFocus();
+  pasteInput.focus();
 }
 
 async function waitForReplay(): Promise<HistoryRecord> {
@@ -150,19 +189,16 @@ async function runReplay() {
   statusSource.textContent = "履歴から再表示";
 
   isHtmlMode = record.is_html;
+  outputBuffer = record.translated_text;
   translatedText.textContent = "";
   translatedHtml.innerHTML = "";
 
-  if (isHtmlMode) {
-    const sanitized = await invoke<string>("sanitize_html", { html: record.translated_text });
-    translatedHtml.innerHTML = sanitized;
-    translatedText.hidden = true;
-    translatedHtml.hidden = false;
-  } else {
-    translatedText.textContent = record.translated_text;
-    translatedText.hidden = false;
-    translatedHtml.hidden = true;
-  }
+  const rendered = isHtmlMode
+    ? await invoke<string>("sanitize_html", { html: record.translated_text })
+    : await renderMarkdown(record.translated_text);
+  translatedHtml.innerHTML = rendered;
+  translatedText.hidden = true;
+  translatedHtml.hidden = false;
 
   statusState.textContent = "✓ 完了";
   toggleSourceButton.disabled = false;
@@ -178,17 +214,17 @@ function listenForTranslationChunks() {
       return;
     }
     outputBuffer += chunk.text;
-    translatedText.textContent = isHtmlMode ? stripTagsPreview(outputBuffer) : outputBuffer;
+    translatedText.textContent = outputBuffer;
   });
 }
 
 async function finishTranslation() {
-  if (isHtmlMode) {
-    const sanitized = await invoke<string>("sanitize_html", { html: outputBuffer });
-    translatedHtml.innerHTML = sanitized;
-    translatedText.hidden = true;
-    translatedHtml.hidden = false;
-  }
+  const rendered = isHtmlMode
+    ? await invoke<string>("sanitize_html", { html: outputBuffer })
+    : await renderMarkdown(outputBuffer);
+  translatedHtml.innerHTML = rendered;
+  translatedText.hidden = true;
+  translatedHtml.hidden = false;
   statusState.textContent = "✓ 完了";
   toggleSourceButton.disabled = false;
   copyButton.disabled = false;
@@ -202,11 +238,9 @@ retryButton.addEventListener("click", () => {
     });
     return;
   }
-  void runCapture();
-});
-
-openSettingsButton.addEventListener("click", () => {
-  void invoke("open_accessibility_settings");
+  if (lastAttempt) {
+    void startTranslation(lastAttempt.input, lastAttempt.html, lastAttempt.kind);
+  }
 });
 
 toggleSourceButton.addEventListener("click", () => {
@@ -216,8 +250,8 @@ toggleSourceButton.addEventListener("click", () => {
 });
 
 copyButton.addEventListener("click", () => {
-  const text = isHtmlMode ? translatedHtml.textContent : translatedText.textContent;
-  void navigator.clipboard.writeText(text ?? "");
+  const text = isHtmlMode ? (translatedHtml.textContent ?? "") : outputBuffer;
+  void navigator.clipboard.writeText(text);
 });
 
 document.addEventListener("keydown", (event) => {
@@ -226,14 +260,31 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
+const POPUP_SIZE_SAVE_DEBOUNCE_MS = 500;
+let popupSizeSaveTimer: number | undefined;
+
+function schedulePopupSizeSave() {
+  if (popupSizeSaveTimer !== undefined) {
+    window.clearTimeout(popupSizeSaveTimer);
+  }
+  popupSizeSaveTimer = window.setTimeout(() => {
+    void invoke("save_popup_size", {
+      width: window.innerWidth,
+      height: window.innerHeight,
+    });
+  }, POPUP_SIZE_SAVE_DEBOUNCE_MS);
+}
+
+window.addEventListener("resize", schedulePopupSizeSave);
+
 if (popupMode === "replay") {
+  pasteForm.hidden = true;
   runReplay().catch((error: unknown) => {
     errorMessage.textContent = error instanceof Error ? error.message : String(error);
-    openSettingsButton.hidden = true;
     showState("error");
   });
 } else {
   listenForTranslationChunks();
-  void renderEngineName();
-  void runCapture();
+  void renderModeLabel();
+  void focusPasteInput();
 }

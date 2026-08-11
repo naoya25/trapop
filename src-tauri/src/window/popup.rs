@@ -1,3 +1,4 @@
+use crate::config;
 use objc2_app_kit::{NSScreen, NSWindow};
 use objc2_foundation::MainThreadMarker;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -7,10 +8,24 @@ use tauri::{AppHandle, Manager, TitleBarStyle, WebviewUrl, WebviewWindowBuilder}
 
 pub const SPACE_PIN_DELAY_MS: u64 = 350;
 
-const POPUP_WIDTH: f64 = 420.0;
-const POPUP_HEIGHT: f64 = 320.0;
+const POPUP_MIN_DIMENSION: f64 = 100.0;
 const POPUP_SCREEN_MARGIN: f64 = 16.0;
 const POPUP_STACK_GAP: f64 = 12.0;
+
+fn clamp_popup_dimension(value: f64, fallback: f64) -> f64 {
+    if value.is_finite() && value >= POPUP_MIN_DIMENSION {
+        value
+    } else {
+        fallback
+    }
+}
+
+fn popup_size(app: &AppHandle) -> (f64, f64) {
+    let cfg = config::load(app);
+    let width = clamp_popup_dimension(cfg.popup_width, config::DEFAULT_POPUP_WIDTH);
+    let height = clamp_popup_dimension(cfg.popup_height, config::DEFAULT_POPUP_HEIGHT);
+    (width, height)
+}
 
 #[derive(Default)]
 pub struct PopupCounter(AtomicU32);
@@ -19,14 +34,14 @@ pub struct PopupCounter(AtomicU32);
 pub struct PopupStack(pub Mutex<Vec<(String, f64)>>);
 
 pub enum PopupMode {
-    Capture,
+    Paste,
     Replay,
 }
 
 impl PopupMode {
     fn as_query(&self) -> &'static str {
         match self {
-            Self::Capture => "capture",
+            Self::Paste => "paste",
             Self::Replay => "replay",
         }
     }
@@ -38,7 +53,12 @@ fn next_label(app: &AppHandle) -> String {
     format!("popup-{n}")
 }
 
-fn cursor_screen_bottom_right(cursor_x: f64, cursor_y: f64) -> Result<(f64, f64), String> {
+fn cursor_screen_bottom_right(
+    cursor_x: f64,
+    cursor_y: f64,
+    width: f64,
+    height: f64,
+) -> Result<(f64, f64), String> {
     let mtm = MainThreadMarker::new().ok_or_else(|| "not on main thread".to_string())?;
     let screens = NSScreen::screens(mtm);
     let main_screen_height = screens
@@ -64,15 +84,21 @@ fn cursor_screen_bottom_right(cursor_x: f64, cursor_y: f64) -> Result<(f64, f64)
         .ok_or_else(|| "no screen contains cursor".to_string())?;
 
     let frame = target.frame();
-    let pos_x = frame.origin.x + frame.size.width - POPUP_SCREEN_MARGIN - POPUP_WIDTH;
-    let top_appkit_y = frame.origin.y + POPUP_SCREEN_MARGIN + POPUP_HEIGHT;
+    let pos_x = frame.origin.x + frame.size.width - POPUP_SCREEN_MARGIN - width;
+    let top_appkit_y = frame.origin.y + POPUP_SCREEN_MARGIN + height;
     let pos_y = main_screen_height - top_appkit_y;
 
     Ok((pos_x, pos_y))
 }
 
-fn stacked_position(app: &AppHandle, cursor_x: f64, cursor_y: f64) -> Result<(f64, f64), String> {
-    let (base_x, base_y) = cursor_screen_bottom_right(cursor_x, cursor_y)?;
+fn stacked_position(
+    app: &AppHandle,
+    cursor_x: f64,
+    cursor_y: f64,
+    width: f64,
+    height: f64,
+) -> Result<(f64, f64), String> {
+    let (base_x, base_y) = cursor_screen_bottom_right(cursor_x, cursor_y, width, height)?;
 
     let stack = app.state::<PopupStack>();
     let mut slots = stack.0.lock().unwrap();
@@ -84,7 +110,7 @@ fn stacked_position(app: &AppHandle, cursor_x: f64, cursor_y: f64) -> Result<(f6
         .fold(None, |acc: Option<f64>, y| Some(acc.map_or(y, |min| min.min(y))));
 
     let pos_y = match topmost_y {
-        Some(top_y) => top_y - POPUP_STACK_GAP - POPUP_HEIGHT,
+        Some(top_y) => top_y - POPUP_STACK_GAP - height,
         None => base_y,
     };
 
@@ -103,7 +129,8 @@ pub fn spawn(
     mode: PopupMode,
 ) -> Result<String, String> {
     let label = next_label(app);
-    let (pos_x, pos_y) = stacked_position(app, cursor_x, cursor_y)?;
+    let (width, height) = popup_size(app);
+    let (pos_x, pos_y) = stacked_position(app, cursor_x, cursor_y, width, height)?;
 
     let window = WebviewWindowBuilder::new(
         app,
@@ -111,7 +138,7 @@ pub fn spawn(
         WebviewUrl::App(format!("popup/index.html?w={label}&mode={}", mode.as_query()).into()),
     )
     .title("TraPoP")
-    .inner_size(POPUP_WIDTH, POPUP_HEIGHT)
+    .inner_size(width, height)
     .decorations(true)
     .title_bar_style(TitleBarStyle::Overlay)
     .hidden_title(true)

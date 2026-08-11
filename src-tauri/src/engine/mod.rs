@@ -1,3 +1,4 @@
+pub mod gemini;
 pub mod mock;
 pub mod openai;
 
@@ -43,13 +44,41 @@ pub trait TranslationEngine: Send + Sync {
     async fn translate(&self, input: &TranslationInput, tx: UnboundedSender<TranslationChunk>);
 }
 
-pub fn resolve(choice: &str, model_override: Option<&str>) -> Box<dyn TranslationEngine> {
-    if choice == "mock" {
-        return Box::new(mock::MockEngine);
-    }
+pub fn system_prompt(is_html: bool) -> String {
+    let base = "あなたはプロの翻訳者です。与えられたテキストを自然な日本語に全文翻訳してください。\
+        要約・省略・意訳による情報の削減は禁止です。原文にある情報はすべて訳文に含めてください。\
+        出力は訳文のみとし、前置きや説明を含めないでください。";
 
-    match openai::OpenAiEngine::from_environment(model_override) {
-        Ok(engine) => Box::new(engine),
-        Err(_) => Box::new(mock::MockEngine),
+    if is_html {
+        format!(
+            "{base} 入力はHTMLです。タグ構造(見出し・リスト・コードブロック・太字・リンク等)は変更せず、\
+            タグ内のテキストノードのみを翻訳してください。<code>と<pre>の中身は翻訳せず原文のまま保持してください。\
+            出力もHTMLのみとし、Markdownのコードフェンスや説明文を付けないでください。"
+        )
+    } else {
+        base.to_string()
+    }
+}
+
+pub fn resolve(choice: &str, model_override: Option<&str>) -> Box<dyn TranslationEngine> {
+    match choice {
+        "mock" => Box::new(mock::MockEngine),
+        "openai" => match openai::OpenAiEngine::from_environment(model_override) {
+            Ok(engine) => Box::new(engine),
+            Err(_) => Box::new(mock::MockEngine),
+        },
+        "gemini" => match gemini::GeminiEngine::from_environment(model_override) {
+            Ok(engine) => Box::new(engine),
+            Err(_) => Box::new(mock::MockEngine),
+        },
+        _ => {
+            if let Ok(engine) = openai::OpenAiEngine::from_environment(model_override) {
+                return Box::new(engine);
+            }
+            if let Ok(engine) = gemini::GeminiEngine::from_environment(model_override) {
+                return Box::new(engine);
+            }
+            Box::new(mock::MockEngine)
+        }
     }
 }

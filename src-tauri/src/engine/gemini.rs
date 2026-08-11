@@ -2,11 +2,11 @@ use super::{TranslationChunk, TranslationEngine, TranslationInput};
 use futures_util::StreamExt;
 use tokio::sync::mpsc::UnboundedSender;
 
-pub const DEFAULT_MODEL: &str = "gpt-4.1-mini";
-const MODEL_ENV_OVERRIDE: &str = "TRAPOP_OPENAI_MODEL";
-const KEYCHAIN_SERVICE: &str = "trapop-openai";
-const API_KEY_ENV: &str = "OPENAI_API_KEY";
-const ENDPOINT: &str = "https://api.openai.com/v1/chat/completions";
+pub const DEFAULT_MODEL: &str = "gemini-2.5-flash";
+const MODEL_ENV_OVERRIDE: &str = "TRAPOP_GEMINI_MODEL";
+const KEYCHAIN_SERVICE: &str = "trapop-gemini";
+const API_KEY_ENV: &str = "GEMINI_API_KEY";
+const ENDPOINT_BASE: &str = "https://generativelanguage.googleapis.com/v1beta/models";
 
 #[derive(Debug)]
 pub struct MissingApiKeyError;
@@ -19,13 +19,13 @@ impl std::fmt::Display for MissingApiKeyError {
 
 impl std::error::Error for MissingApiKeyError {}
 
-pub struct OpenAiEngine {
+pub struct GeminiEngine {
     api_key: String,
     model: String,
     client: reqwest::Client,
 }
 
-impl OpenAiEngine {
+impl GeminiEngine {
     pub fn from_environment(model_override: Option<&str>) -> Result<Self, MissingApiKeyError> {
         let api_key = resolve_api_key().ok_or(MissingApiKeyError)?;
         let model = model_override
@@ -47,25 +47,30 @@ impl OpenAiEngine {
         tx: &UnboundedSender<TranslationChunk>,
     ) -> Result<(), String> {
         let body = serde_json::json!({
-            "model": self.model,
-            "stream": true,
-            "messages": [
-                {"role": "system", "content": super::system_prompt(input.is_html())},
-                {"role": "user", "content": input.body()},
+            "systemInstruction": {
+                "parts": [{"text": super::system_prompt(input.is_html())}],
+            },
+            "contents": [
+                {"role": "user", "parts": [{"text": input.body()}]},
             ],
         });
 
+        let endpoint = format!(
+            "{ENDPOINT_BASE}/{model}:streamGenerateContent?alt=sse",
+            model = self.model
+        );
+
         let response = self
             .client
-            .post(ENDPOINT)
-            .bearer_auth(&self.api_key)
+            .post(endpoint)
+            .header("x-goog-api-key", &self.api_key)
             .json(&body)
             .send()
             .await
             .map_err(|e| e.to_string())?;
 
         if !response.status().is_success() {
-            return Err(format!("OpenAI API error: {}", response.status()));
+            return Err(format!("Gemini API error: {}", response.status()));
         }
 
         let mut stream = response.bytes_stream();
@@ -92,9 +97,9 @@ impl OpenAiEngine {
 }
 
 #[async_trait::async_trait]
-impl TranslationEngine for OpenAiEngine {
+impl TranslationEngine for GeminiEngine {
     fn name(&self) -> &'static str {
-        "openai"
+        "gemini"
     }
 
     async fn translate(&self, input: &TranslationInput, tx: UnboundedSender<TranslationChunk>) {
@@ -112,19 +117,11 @@ fn forward_event(event: &str, tx: &UnboundedSender<TranslationChunk>) -> bool {
         let Some(data) = line.strip_prefix("data: ") else {
             continue;
         };
-        if data == "[DONE]" {
-            return tx
-                .send(TranslationChunk {
-                    text: String::new(),
-                    done: true,
-                })
-                .is_ok();
-        }
 
         let Ok(value) = serde_json::from_str::<serde_json::Value>(data) else {
             continue;
         };
-        let Some(text) = value["choices"][0]["delta"]["content"].as_str() else {
+        let Some(text) = value["candidates"][0]["content"]["parts"][0]["text"].as_str() else {
             continue;
         };
         if text.is_empty() {
@@ -193,5 +190,28 @@ pub fn store_api_key(key: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err("Keychain へのAPIキー保存に失敗しました".to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_environment_errors_without_api_key() {
+        std::env::remove_var(API_KEY_ENV);
+        if has_stored_key() {
+            return;
+        }
+        let result = GeminiEngine::from_environment(None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn html_system_prompt_extends_plain_text_prompt() {
+        let plain = super::super::system_prompt(false);
+        let html = super::super::system_prompt(true);
+        assert!(html.starts_with(&plain));
+        assert!(html.contains("HTML"));
     }
 }

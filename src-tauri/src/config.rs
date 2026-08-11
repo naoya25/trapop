@@ -12,6 +12,7 @@ pub enum EngineChoice {
     #[default]
     Auto,
     Openai,
+    Gemini,
     Mock,
 }
 
@@ -20,6 +21,7 @@ impl EngineChoice {
         match self {
             Self::Auto => "auto",
             Self::Openai => "openai",
+            Self::Gemini => "gemini",
             Self::Mock => "mock",
         }
     }
@@ -28,6 +30,7 @@ impl EngineChoice {
         match value {
             "auto" => Ok(Self::Auto),
             "openai" => Ok(Self::Openai),
+            "gemini" => Ok(Self::Gemini),
             "mock" => Ok(Self::Mock),
             other => Err(format!("未知のエンジン指定です: {other}")),
         }
@@ -112,7 +115,12 @@ mod tests {
 
     #[test]
     fn engine_choice_round_trips_through_str() {
-        for choice in [EngineChoice::Auto, EngineChoice::Openai, EngineChoice::Mock] {
+        for choice in [
+            EngineChoice::Auto,
+            EngineChoice::Openai,
+            EngineChoice::Gemini,
+            EngineChoice::Mock,
+        ] {
             let parsed = EngineChoice::parse(choice.as_str()).unwrap();
             assert_eq!(parsed, choice);
         }
@@ -120,6 +128,6 @@ mod tests {
 
     #[test]
     fn rejects_unknown_engine_choice() {
-        assert!(EngineChoice::parse("gemini").is_err());
+        assert!(EngineChoice::parse("anthropic").is_err());
     }
 }

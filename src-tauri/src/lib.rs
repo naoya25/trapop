@@ -55,7 +55,8 @@ struct SettingsView {
     hotkey: String,
     engine_choice: &'static str,
     model_override: Option<String>,
-    has_api_key: bool,
+    has_openai_key: bool,
+    has_gemini_key: bool,
     effective_engine_name: &'static str,
 }
 
@@ -203,7 +204,8 @@ fn get_settings(app: AppHandle, engine: tauri::State<EngineHandle>) -> SettingsV
         hotkey: cfg.hotkey,
         engine_choice: cfg.engine_choice.as_str(),
         model_override: cfg.model_override,
-        has_api_key: engine::openai::has_stored_key(),
+        has_openai_key: engine::openai::has_stored_key(),
+        has_gemini_key: engine::gemini::has_stored_key(),
         effective_engine_name: engine.current().name(),
     }
 }
@@ -252,6 +254,7 @@ fn set_model_override(
 fn save_api_key(
     app: AppHandle,
     engine: tauri::State<EngineHandle>,
+    provider: String,
     key: String,
 ) -> Result<(), String> {
     let trimmed = key.trim();
@@ -259,7 +262,11 @@ fn save_api_key(
         return Err("APIキーが空です".to_string());
     }
 
-    engine::openai::store_api_key(trimmed)?;
+    match provider.as_str() {
+        "openai" => engine::openai::store_api_key(trimmed)?,
+        "gemini" => engine::gemini::store_api_key(trimmed)?,
+        other => return Err(format!("未知のエンジン指定です: {other}")),
+    }
 
     let cfg = config::load(&app);
     engine.set(build_engine(&cfg));

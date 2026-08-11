@@ -10,6 +10,17 @@ const TRAY_ICON_BYTES: &[u8] = include_bytes!("../../icons/icon-tray.png");
 pub fn setup_main_window(app: &AppHandle) -> tauri::Result<()> {
     if let Some(main) = app.get_webview_window("main") {
         main.hide()?;
+
+        // 🔴で閉じると既定では destroy され「設定...」から二度と開けなくなるため、
+        // 閉じる操作は hide に読み替える。
+        let main_for_event = main.clone();
+        main.on_window_event(move |event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = main_for_event.hide();
+                let _ = main_for_event.emit_to("main", "main-hidden", ());
+            }
+        });
     }
     Ok(())
 }
@@ -28,6 +39,7 @@ pub fn hide_main_window_before_popup(app: &AppHandle) {
     if let Some(main) = app.get_webview_window("main") {
         if main.is_visible().unwrap_or(false) {
             let _ = main.hide();
+            let _ = main.emit_to("main", "main-hidden", ());
         }
     }
 }

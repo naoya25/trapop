@@ -8,6 +8,15 @@ use tauri::{AppHandle, Manager};
 const HISTORY_FILE: &str = "history.jsonl";
 const SOURCE_PREVIEW_CHARS: usize = 200;
 const HISTORY_DISPLAY_LIMIT: usize = 50;
+const HISTORY_MAX_RECORDS: usize = 500;
+// 1レコードの訳文上限。無制限だと 500件×長文でファイルが肥大化し、
+// append ごとの rotate 全読みが重くなる
+const HISTORY_TRANSLATED_MAX_CHARS: usize = 50_000;
+// rotate の全読みはファイルがこのサイズを超えるまで走らせない(通常は metadata 参照のみ)
+const ROTATE_TRIGGER_BYTES: u64 = 4 * 1024 * 1024;
+// rotate 実行時はこのバイト数以下まで古い行を落とす。トリガーの半分にすることで
+// 「トリガー超えっぱなし → 毎 append 全読み」に張り付かない
+const ROTATE_TARGET_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistoryRecord {
@@ -26,7 +35,15 @@ impl HistoryRecord {
             .unwrap_or_default();
         let timestamp_ms = now.as_millis() as i64;
         let id = format!("{timestamp_ms}-{:x}", now.subsec_nanos());
-        let source_preview = text_preview(source_text, SOURCE_PREVIEW_CHARS);
+        let source_preview = text_preview(source_text, SOURCE_PREVIEW_CHARS, is_html);
+        let translated_text = if translated_text.chars().count() > HISTORY_TRANSLATED_MAX_CHARS {
+            translated_text
+                .chars()
+                .take(HISTORY_TRANSLATED_MAX_CHARS)
+                .collect()
+        } else {
+            translated_text
+        };
 
         Self {
             id,
@@ -39,17 +56,27 @@ impl HistoryRecord {
     }
 }
 
-fn text_preview(source: &str, max_chars: usize) -> String {
+// タグ剥がしは HTML ソースのみ。plain text に '<' が含まれるケース
+// (コード片の `if (a < b)` 等)を巻き込まないため is_html で分岐する。
+fn text_preview(source: &str, max_chars: usize, strip_tags: bool) -> String {
+    if !strip_tags {
+        return source.chars().take(max_chars).collect();
+    }
+
     let mut preview = String::new();
+    let mut count = 0;
     let mut in_tag = false;
     for ch in source.chars() {
-        if preview.chars().count() >= max_chars {
+        if count >= max_chars {
             break;
         }
         match ch {
             '<' => in_tag = true,
             '>' => in_tag = false,
-            _ if !in_tag => preview.push(ch),
+            _ if !in_tag => {
+                preview.push(ch);
+                count += 1;
+            }
             _ => {}
         }
     }
@@ -62,15 +89,68 @@ fn history_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join(HISTORY_FILE))
 }
 
+// append + rotate は read-all → write-all を含み非原子。複数 popup の翻訳が
+// 同時完了しても履歴が消えないよう、プロセス内 lock で直列化する。
+static APPEND_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+// バイトトリガー未満でも件数上限が効くよう、N 回に1回は全読み rotate を強制する
+// (超過は最大でもこの間隔ぶんに収まる)
+static APPEND_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+const FORCE_ROTATE_EVERY_APPENDS: u32 = 50;
+
 pub fn append(app: &AppHandle, record: &HistoryRecord) -> Result<(), String> {
+    let _guard = APPEND_LOCK.lock().map_err(|e| e.to_string())?;
     let path = history_path(app)?;
     let line = serde_json::to_string(record).map_err(|e| e.to_string())?;
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
-        .open(path)
+        .open(&path)
         .map_err(|e| e.to_string())?;
-    writeln!(file, "{line}").map_err(|e| e.to_string())
+    writeln!(file, "{line}").map_err(|e| e.to_string())?;
+    drop(file);
+
+    rotate_if_needed(&path)
+}
+
+// 翻訳対象は業務テキストなので、無期限に平文が溜まり続けないよう件数上限で切り詰める。
+// 全読みは重いので、ファイルサイズが閾値を超えるまでは metadata 参照だけで済ませる。
+fn rotate_if_needed(path: &PathBuf) -> Result<(), String> {
+    // == 0 なので各プロセスの初回 append でも1回走る。カウンタはプロセス内なので、
+    // 毎日再起動する使い方でも再起動をまたいだ件数上限が効く
+    let count = APPEND_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let force_by_count = count.is_multiple_of(FORCE_ROTATE_EVERY_APPENDS);
+
+    let size = fs::metadata(path).map_err(|e| e.to_string())?.len();
+    if !force_by_count && size < ROTATE_TRIGGER_BYTES {
+        return Ok(());
+    }
+
+    let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let lines: Vec<&str> = content
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+
+    // 件数上限とバイト目標の両方で新しい側から残す
+    let mut keep: Vec<&str> = lines
+        .iter()
+        .rev()
+        .take(HISTORY_MAX_RECORDS)
+        .copied()
+        .collect();
+    let mut total: usize = keep.iter().map(|l| l.len() + 1).sum();
+    while total > ROTATE_TARGET_BYTES {
+        match keep.pop() {
+            Some(dropped) => total -= dropped.len() + 1,
+            None => break,
+        }
+    }
+    keep.reverse();
+
+    let mut rewritten = keep.join("\n");
+    rewritten.push('\n');
+    fs::write(path, rewritten).map_err(|e| e.to_string())
 }
 
 fn recent_from_lines(content: &str, limit: usize) -> Vec<HistoryRecord> {

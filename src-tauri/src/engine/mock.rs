@@ -24,21 +24,12 @@ impl TranslationEngine for MockEngine {
             TranslationInput::PlainText(text) => fixed_translation(text),
         };
         for word in body.split_inclusive(' ') {
-            if tx
-                .send(TranslationChunk {
-                    text: word.to_string(),
-                    done: false,
-                })
-                .is_err()
-            {
+            if tx.send(TranslationChunk::text(word)).is_err() {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(STREAM_INTERVAL_MS)).await;
         }
-        let _ = tx.send(TranslationChunk {
-            text: String::new(),
-            done: true,
-        });
+        let _ = tx.send(TranslationChunk::done());
     }
 }
 

@@ -14,6 +14,7 @@ type EngineChoice = "auto" | "openai" | "gemini" | "mock";
 
 type SettingsView = {
   hotkey: string;
+  hotkey_error: string | null;
   engine_choice: EngineChoice;
   model_override: string | null;
   has_openai_key: boolean;
@@ -22,6 +23,11 @@ type SettingsView = {
   lang_a: string;
   lang_b: string;
 };
+
+// メイン窓は普段非表示。翻訳のたびに全件再読みしないよう、非表示中は dirty フラグだけ
+// 立てて、表示時・履歴タブ切替時にまとめて読み直す
+let historyDirty = false;
+let windowVisible = false;
 
 const tabHistory = document.getElementById("tab-history") as HTMLButtonElement;
 const tabSettings = document.getElementById("tab-settings") as HTMLButtonElement;
@@ -40,7 +46,13 @@ function activate(tab: "history" | "settings") {
   panelSettings.hidden = isHistory;
 }
 
-tabHistory.addEventListener("click", () => activate("history"));
+tabHistory.addEventListener("click", () => {
+  activate("history");
+  if (historyDirty) {
+    historyDirty = false;
+    void loadHistory();
+  }
+});
 tabSettings.addEventListener("click", () => activate("settings"));
 
 // --- history ---
@@ -152,7 +164,13 @@ document.addEventListener("keydown", (event) => {
 });
 
 getCurrentWindow().listen("history-appended", () => {
-  void loadHistory();
+  // 窓が見えていて履歴タブ表示中なら即反映、それ以外は dirty だけ立てる
+  // (既定タブが履歴なので、タブ状態だけで判定すると非表示の窓でも毎回全件再読みが走る)
+  if (windowVisible && !panelHistory.hidden) {
+    void loadHistory();
+    return;
+  }
+  historyDirty = true;
 });
 
 // --- settings ---
@@ -175,6 +193,13 @@ const geminiApiKeySaveButton = document.getElementById(
 const geminiApiKeyStatus = document.getElementById("gemini-api-key-status") as HTMLElement;
 const modelInput = document.getElementById("model-input") as HTMLInputElement;
 const modelSaveButton = document.getElementById("model-save-button") as HTMLButtonElement;
+const modelStatus = document.getElementById("model-status") as HTMLElement;
+const langStatus = document.getElementById("lang-status") as HTMLElement;
+const engineStatus = document.getElementById("engine-status") as HTMLElement;
+
+// loadSettings が engineStatus を毎回書き直すため、エラーは変数に持って
+// 描画時に優先表示する(catch で直接書くと数 ms で上書きされて消える)
+let engineError = "";
 
 function acceleratorToLabel(accelerator: string): string {
   return accelerator
@@ -193,6 +218,11 @@ async function loadSettings() {
   modelInput.value = settings.model_override ?? "";
   openaiApiKeyStatus.textContent = settings.has_openai_key ? "登録済み: ●●●●●●●●" : "未登録";
   geminiApiKeyStatus.textContent = settings.has_gemini_key ? "登録済み: ●●●●●●●●" : "未登録";
+  engineStatus.textContent = engineError || `実効エンジン: ${settings.effective_engine_name}`;
+  if (settings.hotkey_error) {
+    hotkeyHint.hidden = false;
+    hotkeyHint.textContent = `ホットキー登録に失敗しています: ${settings.hotkey_error}`;
+  }
 }
 
 const MODIFIER_CODES = new Set([
@@ -261,17 +291,35 @@ hotkeyChangeButton.addEventListener("click", () => {
 });
 
 function saveLangPair() {
-  void invoke("set_lang_pair", {
+  invoke("set_lang_pair", {
     langA: langASelect.value,
     langB: langBSelect.value,
-  }).then(() => loadSettings());
+  })
+    .then(() => {
+      langStatus.textContent = "";
+      engineError = "";
+      return loadSettings();
+    })
+    .catch((error: unknown) => {
+      langStatus.textContent = String(error);
+      // 保存されなかったので表示を実際の設定値へ戻す
+      void loadSettings();
+    });
 }
 
 langASelect.addEventListener("change", saveLangPair);
 langBSelect.addEventListener("change", saveLangPair);
 
 engineSelect.addEventListener("change", () => {
-  void invoke("set_engine_choice", { choice: engineSelect.value }).then(() => loadSettings());
+  invoke("set_engine_choice", { choice: engineSelect.value })
+    .then(() => {
+      engineError = "";
+      return loadSettings();
+    })
+    .catch((error: unknown) => {
+      engineError = String(error);
+      void loadSettings();
+    });
 });
 
 openaiApiKeySaveButton.addEventListener("click", () => {
@@ -282,6 +330,7 @@ openaiApiKeySaveButton.addEventListener("click", () => {
   invoke("save_api_key", { provider: "openai", key })
     .then(() => {
       openaiApiKeyInput.value = "";
+      engineError = "";
       return loadSettings();
     })
     .catch((error: unknown) => {
@@ -297,6 +346,7 @@ geminiApiKeySaveButton.addEventListener("click", () => {
   invoke("save_api_key", { provider: "gemini", key })
     .then(() => {
       geminiApiKeyInput.value = "";
+      engineError = "";
       return loadSettings();
     })
     .catch((error: unknown) => {
@@ -306,14 +356,26 @@ geminiApiKeySaveButton.addEventListener("click", () => {
 
 modelSaveButton.addEventListener("click", () => {
   const model = modelInput.value.trim();
-  void invoke("set_model_override", { model: model.length > 0 ? model : null }).then(() =>
-    loadSettings(),
-  );
+  invoke("set_model_override", { model: model.length > 0 ? model : null })
+    .then(() => {
+      modelStatus.textContent = "";
+      engineError = "";
+      return loadSettings();
+    })
+    .catch((error: unknown) => {
+      modelStatus.textContent = String(error);
+    });
 });
 
 getCurrentWindow().listen("main-shown", () => {
+  windowVisible = true;
+  historyDirty = false;
   void loadHistory();
   void loadSettings();
+});
+
+getCurrentWindow().listen("main-hidden", () => {
+  windowVisible = false;
 });
 
 void loadHistory();

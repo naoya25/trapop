@@ -31,7 +31,7 @@ fn popup_size(app: &AppHandle) -> (f64, f64) {
 pub struct PopupCounter(AtomicU32);
 
 #[derive(Default)]
-pub struct PopupStack(pub Mutex<Vec<(String, f64)>>);
+pub struct PopupStack(pub Mutex<Vec<String>>);
 
 pub enum PopupMode {
     Paste,
@@ -53,12 +53,22 @@ fn next_label(app: &AppHandle) -> String {
     format!("popup-{n}")
 }
 
+struct ScreenAnchor {
+    base_x: f64,
+    base_y: f64,
+    min_y: f64,
+    // 対象スクリーンの水平範囲(グローバル論理座標)。スタック計算で
+    // 他ディスプレイ上の popup を混ぜないためのフィルタに使う。
+    left_x: f64,
+    right_x: f64,
+}
+
 fn cursor_screen_bottom_right(
     cursor_x: f64,
     cursor_y: f64,
     width: f64,
     height: f64,
-) -> Result<(f64, f64), String> {
+) -> Result<ScreenAnchor, String> {
     let mtm = MainThreadMarker::new().ok_or_else(|| "not on main thread".to_string())?;
     let screens = NSScreen::screens(mtm);
     let main_screen_height = screens
@@ -88,7 +98,16 @@ fn cursor_screen_bottom_right(
     let top_appkit_y = frame.origin.y + POPUP_SCREEN_MARGIN + height;
     let pos_y = main_screen_height - top_appkit_y;
 
-    Ok((pos_x, pos_y))
+    let screen_top_appkit = frame.origin.y + frame.size.height;
+    let min_y = main_screen_height - screen_top_appkit + POPUP_SCREEN_MARGIN;
+
+    Ok(ScreenAnchor {
+        base_x: pos_x,
+        base_y: pos_y,
+        min_y,
+        left_x: frame.origin.x,
+        right_x: frame.origin.x + frame.size.width,
+    })
 }
 
 fn stacked_position(
@@ -98,23 +117,40 @@ fn stacked_position(
     width: f64,
     height: f64,
 ) -> Result<(f64, f64), String> {
-    let (base_x, base_y) = cursor_screen_bottom_right(cursor_x, cursor_y, width, height)?;
+    let anchor = cursor_screen_bottom_right(cursor_x, cursor_y, width, height)?;
 
     let stack = app.state::<PopupStack>();
     let mut slots = stack.0.lock().unwrap();
-    slots.retain(|(label, _)| app.get_webview_window(label).is_some());
+    slots.retain(|label| app.get_webview_window(label).is_some());
 
+    // spawn 時の座標はドラッグ移動で古くなるため、生きている popup の
+    // 現在位置から都度計算する。対象スクリーン上の popup だけを見る。
+    // outer_position(物理)÷ その window 自身の scale_factor は、tao が
+    // 「window の載る monitor の scale で論理⇔物理変換する」実装のため、
+    // 混在 DPI でもグローバル論理座標に正しく戻る。
     let topmost_y = slots
         .iter()
-        .map(|(_, top_y)| *top_y)
+        .filter_map(|label| {
+            let window = app.get_webview_window(label)?;
+            let scale = window.scale_factor().ok()?;
+            let pos = window.outer_position().ok()?;
+            let x = f64::from(pos.x) / scale;
+            let y = f64::from(pos.y) / scale;
+            (x >= anchor.left_x && x < anchor.right_x).then_some(y)
+        })
         .fold(None, |acc: Option<f64>, y| Some(acc.map_or(y, |min| min.min(y))));
 
     let pos_y = match topmost_y {
-        Some(top_y) => top_y - POPUP_STACK_GAP - height,
-        None => base_y,
+        Some(top_y) => {
+            let candidate = top_y - POPUP_STACK_GAP - height;
+            // 画面上端を越えたら base_y に戻すと最古の popup を完全に隠すため、
+            // 上端に張り付ける(重なりは部分的に留める)。
+            candidate.max(anchor.min_y)
+        }
+        None => anchor.base_y,
     };
 
-    Ok((base_x, pos_y))
+    Ok((anchor.base_x, pos_y))
 }
 
 fn ns_window_ref(window: &tauri::WebviewWindow) -> Result<&NSWindow, String> {
@@ -138,6 +174,28 @@ pub fn spawn(
         WebviewUrl::App(format!("popup/index.html?w={label}&mode={}", mode.as_query()).into()),
     )
     .title("TraPoP")
+    // 訳文中の外部リンクをクリックしても常時最前面の webview が
+    // そのまま任意サイトへ遷移しないようアプリ内 URL だけ許可し、
+    // 外部 http/https は既定ブラウザへ逃がす。localhost は dev server 用。
+    .on_navigation({
+        let app_for_nav = app.clone();
+        move |url| {
+            let scheme = url.scheme();
+            // tauri scheme は popup の初期ロードだけ許可する。一律許可だと訳文中の
+            // 相対リンク(ammonia 既定で素通り)を踏んだとき別パスへ遷移して訳が消える。
+            let internal = (scheme == "tauri" && url.path() == "/popup/index.html")
+                || (cfg!(debug_assertions)
+                    && scheme == "http"
+                    && url.host_str() == Some("localhost"));
+            if !internal && matches!(scheme, "http" | "https") {
+                use tauri_plugin_opener::OpenerExt;
+                let _ = app_for_nav
+                    .opener()
+                    .open_url(url.to_string(), None::<String>);
+            }
+            internal
+        }
+    })
     .inner_size(width, height)
     .decorations(true)
     .title_bar_style(TitleBarStyle::Overlay)
@@ -156,10 +214,43 @@ pub fn spawn(
         .0
         .lock()
         .unwrap()
-        .push((label.clone(), pos_y));
+        .push(label.clone());
 
-    apply_collection_behavior(&window, CollectionBehaviorPreset::MoveToActiveSpace)?;
-    window.show().map_err(|e| e.to_string())?;
+    let app_for_event = app.clone();
+    let label_for_event = label.clone();
+    window.on_window_event(move |event| {
+        if matches!(event, tauri::WindowEvent::Destroyed) {
+            app_for_event
+                .state::<crate::translation_registry::TranslationRegistry>()
+                .cancel(&label_for_event, None);
+            app_for_event
+                .state::<crate::HistoryReplayState>()
+                .0
+                .lock()
+                .unwrap()
+                .remove(&label_for_event);
+            app_for_event
+                .state::<PopupStack>()
+                .0
+                .lock()
+                .unwrap()
+                .retain(|l| l != &label_for_event);
+        }
+    });
+
+    // build 後に失敗すると不可視 window が残り、以降のスタック座標計算を
+    // 狂わせ続けるため、失敗時は window ごと破棄して stack からも抜く。
+    let post_build = apply_collection_behavior(&window, CollectionBehaviorPreset::MoveToActiveSpace)
+        .and_then(|_| window.show().map_err(|e| e.to_string()));
+    if let Err(e) = post_build {
+        let _ = window.destroy();
+        app.state::<PopupStack>()
+            .0
+            .lock()
+            .unwrap()
+            .retain(|l| l != &label);
+        return Err(e);
+    }
 
     schedule_space_pin(app, label.clone());
 
@@ -203,7 +294,7 @@ fn schedule_space_pin(app: &AppHandle, label: String) {
 
 pub fn close_all(app: &AppHandle) {
     let stack = app.state::<PopupStack>();
-    let labels: Vec<String> = stack.0.lock().unwrap().iter().map(|(l, _)| l.clone()).collect();
+    let labels: Vec<String> = stack.0.lock().unwrap().clone();
     for label in labels {
         if let Some(window) = app.get_webview_window(&label) {
             let _ = window.close();

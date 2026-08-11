@@ -112,7 +112,26 @@ pub fn load(app: &AppHandle) -> AppConfig {
 pub fn save(app: &AppHandle, config: &AppConfig) -> Result<(), String> {
     let path = config_path(app)?;
     let json = serde_json::to_string_pretty(config).map_err(|e| e.to_string())?;
-    fs::write(path, json).map_err(|e| e.to_string())
+    // fs::write は truncate→write で非原子。書き込み途中に load() が走ると
+    // 壊れた JSON を読んで全設定が既定値に落ちるため、temp + rename で原子的に置換する。
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, json).map_err(|e| e.to_string())?;
+    fs::rename(&tmp, &path).map_err(|e| e.to_string())
+}
+
+// 設定変更は read-modify-write なので、複数 popup からの同時保存(リサイズ等)で
+// 他フィールドを古い値へ巻き戻さないよう、プロセス内 lock で直列化する。
+static UPDATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+pub fn update(
+    app: &AppHandle,
+    mutate: impl FnOnce(&mut AppConfig),
+) -> Result<AppConfig, String> {
+    let _guard = UPDATE_LOCK.lock().map_err(|e| e.to_string())?;
+    let mut cfg = load(app);
+    mutate(&mut cfg);
+    save(app, &cfg)?;
+    Ok(cfg)
 }
 
 fn parse_config(content: &str) -> AppConfig {

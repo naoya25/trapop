@@ -51,6 +51,7 @@
             <option value="韓国語">韓国語</option>
           </select>
         </div>
+        <p class="settings-hint" id="lang-status"></p>
       </div>
 
       <div class="settings-group">
@@ -59,8 +60,9 @@
           <option value="auto">auto(キーがあれば openai、無ければ gemini)</option>
           <option value="openai">openai</option>
           <option value="gemini">gemini</option>
-          <option value="mock">mock</option>
+          <option value="mock">mock(開発用・翻訳しません)</option>
         </select>
+        <p class="settings-hint" id="engine-status"></p>
       </div>
 
       <div class="settings-group">
@@ -99,6 +101,7 @@
           <input class="settings-input" id="model-input" type="text" placeholder="gpt-4.1-mini" />
           <button class="btn" id="model-save-button">保存</button>
         </div>
+        <p class="settings-hint" id="model-status"></p>
       </div>
     </section>
 

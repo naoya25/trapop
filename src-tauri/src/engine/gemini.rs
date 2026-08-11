@@ -32,6 +32,9 @@ impl GeminiEngine {
             .filter(|m| !m.trim().is_empty())
             .map(|m| m.to_string())
             .or_else(|| std::env::var(MODEL_ENV_OVERRIDE).ok())
+            // モデル名はエンドポイント URL に連結するため、パス/クエリを
+            // 差し替えられる文字(`/` `?` `#` 等)が入っていたら既定に落とす。
+            .filter(|m| is_safe_model_name(m))
             .unwrap_or_else(|| DEFAULT_MODEL.to_string());
 
         Ok(Self {
@@ -72,28 +75,29 @@ impl GeminiEngine {
             .map_err(|e| e.to_string())?;
 
         if !response.status().is_success() {
-            return Err(format!("Gemini API error: {}", response.status()));
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            let body_head: String = body.chars().take(200).collect();
+            // 生のレスポンス本文はユーザーに出さず stderr に落とす
+            eprintln!("[trapop] Gemini API error: {status} {body_head}");
+            return Err(super::user_facing_api_error("Gemini", status.as_u16()));
         }
 
         let mut stream = response.bytes_stream();
-        let mut buffer = String::new();
+        let mut buffer = super::sse::SseBuffer::new();
 
         while let Some(chunk) = stream.next().await {
             let bytes = chunk.map_err(|e| e.to_string())?;
-            buffer.push_str(&String::from_utf8_lossy(&bytes));
+            buffer.push(&bytes);
 
-            while let Some(pos) = buffer.find("\n\n") {
-                let event: String = buffer.drain(..pos + 2).collect();
+            while let Some(event) = buffer.next_event() {
                 if !forward_event(&event, tx) {
                     return Ok(());
                 }
             }
         }
 
-        let _ = tx.send(TranslationChunk {
-            text: String::new(),
-            done: true,
-        });
+        let _ = tx.send(TranslationChunk::done());
         Ok(())
     }
 }
@@ -112,10 +116,9 @@ impl TranslationEngine for GeminiEngine {
         tx: UnboundedSender<TranslationChunk>,
     ) {
         if let Err(err) = self.stream_translation(input, lang_a, lang_b, &tx).await {
-            let _ = tx.send(TranslationChunk {
-                text: format!("翻訳中にエラーが発生しました: {err}"),
-                done: true,
-            });
+            let _ = tx.send(TranslationChunk::error(format!(
+                "翻訳中にエラーが発生しました: {err}"
+            )));
         }
     }
 }
@@ -135,70 +138,30 @@ fn forward_event(event: &str, tx: &UnboundedSender<TranslationChunk>) -> bool {
         if text.is_empty() {
             continue;
         }
-        if tx
-            .send(TranslationChunk {
-                text: text.to_string(),
-                done: false,
-            })
-            .is_err()
-        {
+        if tx.send(TranslationChunk::text(text)).is_err() {
             return false;
         }
     }
     true
 }
 
-fn resolve_api_key() -> Option<String> {
-    keychain_api_key().or_else(|| {
-        std::env::var(API_KEY_ENV)
-            .ok()
-            .filter(|v| !v.trim().is_empty())
-    })
+fn is_safe_model_name(model: &str) -> bool {
+    !model.is_empty()
+        && model
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
 }
 
-fn keychain_api_key() -> Option<String> {
-    let output = std::process::Command::new("security")
-        .args(["find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"])
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let key = String::from_utf8(output.stdout).ok()?;
-    let trimmed = key.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
+fn resolve_api_key() -> Option<String> {
+    super::keys::resolve_api_key(KEYCHAIN_SERVICE, API_KEY_ENV)
 }
 
 pub fn has_stored_key() -> bool {
-    keychain_api_key().is_some()
+    super::keys::has_stored_key(KEYCHAIN_SERVICE)
 }
 
 pub fn store_api_key(key: &str) -> Result<(), String> {
-    let status = std::process::Command::new("security")
-        .args([
-            "add-generic-password",
-            "-U",
-            "-a",
-            "trapop",
-            "-s",
-            KEYCHAIN_SERVICE,
-            "-w",
-            key,
-        ])
-        .status()
-        .map_err(|e| e.to_string())?;
-
-    if status.success() {
-        Ok(())
-    } else {
-        Err("Keychain へのAPIキー保存に失敗しました".to_string())
-    }
+    super::keys::store_api_key(KEYCHAIN_SERVICE, key)
 }
 
 #[cfg(test)]

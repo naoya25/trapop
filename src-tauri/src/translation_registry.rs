@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 
-pub type CancelSender = Arc<Mutex<Option<oneshot::Sender<()>>>>;
+type CancelSender = Arc<Mutex<Option<oneshot::Sender<()>>>>;
 
 #[derive(Default)]
 pub struct TranslationRegistry {
@@ -10,7 +10,9 @@ pub struct TranslationRegistry {
 }
 
 impl TranslationRegistry {
-    pub fn begin(&self, label: &str, request_id: u64, cancel_tx: oneshot::Sender<()>) -> CancelSender {
+    // キャンセルは registry 経由(cancel/supersede)のみ。sender を外に返さないことで
+    // 経路が1本であることを型で保証する。
+    pub fn begin(&self, label: &str, request_id: u64, cancel_tx: oneshot::Sender<()>) {
         let cancel_tx: CancelSender = Arc::new(Mutex::new(Some(cancel_tx)));
 
         let mut inflight = self.inflight.lock().unwrap();
@@ -19,9 +21,7 @@ impl TranslationRegistry {
                 let _ = tx.send(());
             }
         }
-        inflight.insert(label.to_string(), (request_id, cancel_tx.clone()));
-
-        cancel_tx
+        inflight.insert(label.to_string(), (request_id, cancel_tx));
     }
 
     pub fn finish(&self, label: &str, request_id: u64) {
@@ -33,8 +33,19 @@ impl TranslationRegistry {
         }
     }
 
-    pub fn cancel(&self, label: &str) {
+    // finish と同じ世代ガードを持つ。停止→即再翻訳の順でイベントが遅延到着しても、
+    // 古い世代宛の cancel が新しいストリームを巻き込まないようにする。
+    // request_id が None のときは無条件(popup 破棄時の掃除用)。
+    pub fn cancel(&self, label: &str, request_id: Option<u64>) {
         let mut inflight = self.inflight.lock().unwrap();
+        let should_cancel = match (request_id, inflight.get(label)) {
+            (_, None) => false,
+            (None, Some(_)) => true,
+            (Some(id), Some((current_id, _))) => *current_id == id,
+        };
+        if !should_cancel {
+            return;
+        }
         if let Some((_, cancel_tx)) = inflight.remove(label) {
             if let Some(tx) = cancel_tx.lock().unwrap().take() {
                 let _ = tx.send(());
@@ -74,10 +85,30 @@ mod tests {
         registry.begin("popup-1", 2, tx2);
         registry.finish("popup-1", 1);
 
-        registry.cancel("popup-1");
+        registry.cancel("popup-1", None);
         assert!(
             rx2.try_recv().is_ok(),
             "generation 2 must still be tracked and cancellable after a stale finish() from generation 1"
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_cancel_does_not_kill_the_new_generation() {
+        let registry = TranslationRegistry::default();
+        let (tx2, mut rx2) = oneshot::channel();
+
+        registry.begin("popup-1", 2, tx2);
+        registry.cancel("popup-1", Some(1));
+
+        assert!(
+            rx2.try_recv().is_err(),
+            "a cancel targeting generation 1 must not cancel generation 2"
+        );
+
+        registry.cancel("popup-1", Some(2));
+        assert!(
+            rx2.try_recv().is_ok(),
+            "a cancel targeting the current generation must go through"
         );
     }
 

@@ -3,19 +3,29 @@ import assert from "node:assert/strict";
 import { safeStreamPreview } from "./preview.ts";
 
 test("passes plain text through unchanged", () => {
-  assert.equal(safeStreamPreview("hello world"), "hello world");
+  assert.equal(safeStreamPreview("hello world", false), "hello world");
+});
+
+test("keeps angle brackets in plain mode (code snippets survive)", () => {
+  assert.equal(
+    safeStreamPreview("if (a < b) return c > d;", false),
+    "if (a < b) return c > d;",
+  );
 });
 
 test("strips complete tags while keeping their text content", () => {
-  assert.equal(safeStreamPreview("<div>ケーキを</div><div>食べました</div>"), "ケーキを食べました");
+  assert.equal(
+    safeStreamPreview("<div>ケーキを</div><div>食べました</div>", true),
+    "ケーキを食べました",
+  );
 });
 
 test("drops a tag left dangling open at the end of the buffer", () => {
-  assert.equal(safeStreamPreview("こんにちは<di"), "こんにちは");
+  assert.equal(safeStreamPreview("こんにちは<di", true), "こんにちは");
 });
 
 test("drops a dangling closing tag with no '>' yet", () => {
-  assert.equal(safeStreamPreview("text</div"), "text");
+  assert.equal(safeStreamPreview("text</div", true), "text");
 });
 
 test("never surfaces a broken tag fragment across chunk boundaries", () => {
@@ -25,7 +35,7 @@ test("never surfaces a broken tag fragment across chunk boundaries", () => {
 
   for (const chunk of chunks) {
     buffer += chunk;
-    previews.push(safeStreamPreview(buffer));
+    previews.push(safeStreamPreview(buffer, true));
   }
 
   for (const preview of previews) {

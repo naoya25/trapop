@@ -1,6 +1,8 @@
 pub mod gemini;
+pub mod keys;
 pub mod mock;
 pub mod openai;
+pub mod sse;
 
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -8,6 +10,33 @@ use tokio::sync::mpsc::UnboundedSender;
 pub struct TranslationChunk {
     pub text: String,
     pub done: bool,
+    pub error: bool,
+}
+
+impl TranslationChunk {
+    pub fn text(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            done: false,
+            error: false,
+        }
+    }
+
+    pub fn done() -> Self {
+        Self {
+            text: String::new(),
+            done: true,
+            error: false,
+        }
+    }
+
+    pub fn error(message: impl Into<String>) -> Self {
+        Self {
+            text: message.into(),
+            done: true,
+            error: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -17,7 +46,7 @@ pub enum TranslationInput {
 }
 
 impl TranslationInput {
-    pub fn from_capture(plain_text: Option<String>, html: Option<String>) -> Option<Self> {
+    pub fn from_paste(plain_text: Option<String>, html: Option<String>) -> Option<Self> {
         if let Some(html) = html.filter(|h| !h.trim().is_empty()) {
             return Some(Self::Html(html));
         }
@@ -74,25 +103,74 @@ pub fn system_prompt(lang_a: &str, lang_b: &str, is_html: bool) -> String {
     }
 }
 
-pub fn resolve(choice: &str, model_override: Option<&str>) -> Box<dyn TranslationEngine> {
+// API エラーは典型ステータスだけ日本語に写像し、生のレスポンス本文は
+// 呼び出し側で stderr に落とす(UI には1行の理由だけ出す)。
+pub fn user_facing_api_error(provider: &str, status: u16) -> String {
+    match status {
+        401 | 403 => format!("{provider} のAPIキーが無効です。設定画面で確認してください。"),
+        429 => format!("{provider} がレート制限中です。しばらく待って再試行してください。"),
+        500..=599 => format!("{provider} 側で障害が発生しています。しばらく待って再試行してください。"),
+        _ => format!("{provider} APIエラー(HTTP {status})。再試行してください。"),
+    }
+}
+
+pub struct ResolvedEngine {
+    pub engine: Box<dyn TranslationEngine>,
+    pub unavailable_reason: Option<String>,
+}
+
+pub fn resolve(choice: &str, model_override: Option<&str>) -> ResolvedEngine {
+    let missing_key = |provider: &str| {
+        Some(format!(
+            "{provider} のAPIキーが未設定です。設定画面から登録してください。"
+        ))
+    };
+
     match choice {
-        "mock" => Box::new(mock::MockEngine),
+        "mock" => ResolvedEngine {
+            engine: Box::new(mock::MockEngine),
+            unavailable_reason: None,
+        },
         "openai" => match openai::OpenAiEngine::from_environment(model_override) {
-            Ok(engine) => Box::new(engine),
-            Err(_) => Box::new(mock::MockEngine),
+            Ok(engine) => ResolvedEngine {
+                engine: Box::new(engine),
+                unavailable_reason: None,
+            },
+            Err(_) => ResolvedEngine {
+                engine: Box::new(mock::MockEngine),
+                unavailable_reason: missing_key("OpenAI"),
+            },
         },
         "gemini" => match gemini::GeminiEngine::from_environment(model_override) {
-            Ok(engine) => Box::new(engine),
-            Err(_) => Box::new(mock::MockEngine),
+            Ok(engine) => ResolvedEngine {
+                engine: Box::new(engine),
+                unavailable_reason: None,
+            },
+            Err(_) => ResolvedEngine {
+                engine: Box::new(mock::MockEngine),
+                unavailable_reason: missing_key("Gemini"),
+            },
         },
-        _ => {
+        other => {
+            // ここに来てよいのは "auto" だけ。エンジン追加時に match 漏れのまま
+            // 黙って auto 挙動になるのを開発中に検出する。
+            debug_assert!(other == "auto", "unknown engine choice: {other}");
             if let Ok(engine) = openai::OpenAiEngine::from_environment(model_override) {
-                return Box::new(engine);
+                return ResolvedEngine {
+                    engine: Box::new(engine),
+                    unavailable_reason: None,
+                };
             }
             if let Ok(engine) = gemini::GeminiEngine::from_environment(model_override) {
-                return Box::new(engine);
+                return ResolvedEngine {
+                    engine: Box::new(engine),
+                    unavailable_reason: None,
+                };
             }
-            Box::new(mock::MockEngine)
+            ResolvedEngine {
+                engine: Box::new(mock::MockEngine),
+                unavailable_reason: missing_key("OpenAI または Gemini"),
+            }
         }
     }
 }

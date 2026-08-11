@@ -7,6 +7,7 @@ type TranslationChunk = {
   request_id: number;
   text: string;
   done: boolean;
+  error: boolean;
 };
 
 type HistoryRecord = {
@@ -33,7 +34,6 @@ type PendingAttempt = {
 
 marked.use({ breaks: true });
 
-const label = getCurrentWindow().label;
 const popupMode =
   new URLSearchParams(window.location.search).get("mode") === "replay" ? "replay" : "paste";
 
@@ -67,6 +67,11 @@ let lastAttempt: PendingAttempt | null = null;
 let isTranslating = false;
 let currentRequestId = 0;
 let nextRequestId = 1;
+let requestStartedAt = 0;
+let firstTokenMs: number | null = null;
+// 停止・エラーごとに増える世代。-1 センチネルだけだと
+// 「停止→再翻訳→停止」で古い pending レンダリングを区別できない
+let partialGeneration = 0;
 
 function setTranslating(active: boolean) {
   isTranslating = active;
@@ -98,7 +103,12 @@ async function startTranslation(input: string, html: string | null, kind: Source
 
   lastAttempt = { input, html, kind };
   outputBuffer = "";
+  requestStartedAt = performance.now();
+  firstTokenMs = null;
   isHtmlMode = Boolean(html && html.trim().length > 0);
+  showingSource = false;
+  sourceText.hidden = true;
+  toggleSourceButton.textContent = "原文を表示";
   sourceText.textContent = input;
   statusSource.textContent = SOURCE_LABEL[kind];
   translatedText.textContent = "";
@@ -113,7 +123,7 @@ async function startTranslation(input: string, html: string | null, kind: Source
   showState("translation");
 
   try {
-    await invoke("start_translation", { label, input, html, requestId });
+    await invoke("start_translation", { input, html, requestId });
   } catch (error) {
     if (currentRequestId !== requestId) {
       return;
@@ -140,8 +150,14 @@ async function handlePaste(event: ClipboardEvent) {
 
   let sanitizedHtml: string | null = null;
   if (html.trim().length > 0) {
-    sanitizedHtml = await invoke<string>("sanitize_html", { html });
-    pasteInput.innerHTML = sanitizedHtml;
+    try {
+      sanitizedHtml = await invoke<string>("sanitize_html", { html });
+      pasteInput.innerHTML = sanitizedHtml;
+    } catch {
+      // sanitize に失敗しても貼り付けを無かったことにしない(plain で続行)
+      sanitizedHtml = null;
+      pasteInput.textContent = plain;
+    }
   } else {
     pasteInput.textContent = plain;
   }
@@ -181,11 +197,45 @@ pasteInput.addEventListener("keydown", (event) => {
   }
 });
 
+// 部分訳もコピー・原文トグルできるよう、完了時と同じレンダリングに落とす。
+// await 後に世代が変わっていたら(新しい翻訳/停止が始まっていたら)何も触らない。
+async function renderPartial(statusText: string) {
+  const generation = ++partialGeneration;
+  const buffer = outputBuffer;
+  const wasHtml = isHtmlMode;
+  try {
+    const rendered = wasHtml
+      ? await invoke<string>("sanitize_html", { html: buffer })
+      : await renderMarkdown(buffer);
+    if (currentRequestId !== -1 || generation !== partialGeneration) {
+      return;
+    }
+    translatedText.hidden = true;
+    translatedText.textContent = "";
+    translatedHtml.innerHTML = rendered;
+    translatedHtml.hidden = false;
+    toggleSourceButton.disabled = false;
+    copyButton.disabled = false;
+    statusState.textContent = statusText;
+  } catch {
+    if (currentRequestId === -1 && generation === partialGeneration) {
+      statusState.textContent = statusText;
+    }
+  }
+}
+
 translateButton.addEventListener("click", () => {
   if (isTranslating) {
-    void invoke("cancel_translation", { label });
+    const stoppedRequestId = currentRequestId;
+    // 先に -1 を立てて以後の遅延チャンクを遮断する(レンダリング完了を待たない)
+    currentRequestId = -1;
+    void invoke("cancel_translation", { requestId: stoppedRequestId });
     setTranslating(false);
-    statusState.textContent = "■ 停止しました";
+    if (outputBuffer.trim().length > 0) {
+      void renderPartial("■ 停止(部分訳)");
+    } else {
+      statusState.textContent = "■ 停止しました";
+    }
     return;
   }
   triggerManualTranslate();
@@ -199,7 +249,7 @@ async function focusPasteInput() {
 async function waitForReplay(): Promise<HistoryRecord> {
   const maxAttempts = 40;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const record = await invoke<HistoryRecord | null>("get_history_replay", { label });
+    const record = await invoke<HistoryRecord | null>("get_history_replay");
     if (record) {
       return record;
     }
@@ -241,19 +291,47 @@ function listenForTranslationChunks() {
     if (chunk.request_id !== currentRequestId) {
       return;
     }
+    if (chunk.error) {
+      setTranslating(false);
+      // 途中までの訳があるなら消さずに残す(9割できた訳をエラーで失わない)
+      if (outputBuffer.trim().length > 0) {
+        currentRequestId = -1;
+        void renderPartial(`⚠ ${chunk.text || "エラー"}(部分訳)`);
+        return;
+      }
+      errorMessage.textContent = chunk.text || "翻訳中にエラーが発生しました。";
+      showState("error");
+      return;
+    }
     if (chunk.done) {
       void finishTranslation(chunk.request_id);
       return;
     }
+    if (firstTokenMs === null) {
+      // 目標: first token 1秒以内。実測値を status バーに常時出して検証可能にする
+      firstTokenMs = Math.round(performance.now() - requestStartedAt);
+    }
     outputBuffer += chunk.text;
-    translatedText.textContent = safeStreamPreview(outputBuffer);
+    translatedText.textContent = safeStreamPreview(outputBuffer, isHtmlMode);
   });
 }
 
 async function finishTranslation(requestId: number) {
-  const rendered = isHtmlMode
-    ? await invoke<string>("sanitize_html", { html: outputBuffer })
-    : await renderMarkdown(outputBuffer);
+  let rendered: string;
+  try {
+    rendered = isHtmlMode
+      ? await invoke<string>("sanitize_html", { html: outputBuffer })
+      : await renderMarkdown(outputBuffer);
+  } catch (error) {
+    // レンダリング失敗を無言の「生成中」のまま放置しない
+    if (requestId !== currentRequestId) {
+      return;
+    }
+    setTranslating(false);
+    errorMessage.textContent = error instanceof Error ? error.message : String(error);
+    showState("error");
+    return;
+  }
 
   if (requestId !== currentRequestId) {
     return;
@@ -263,7 +341,8 @@ async function finishTranslation(requestId: number) {
   translatedText.textContent = "";
   translatedHtml.innerHTML = rendered;
   translatedHtml.hidden = false;
-  statusState.textContent = "✓ 完了";
+  statusState.textContent =
+    firstTokenMs === null ? "✓ 完了" : `✓ 完了 · 初速${firstTokenMs}ms`;
   toggleSourceButton.disabled = false;
   copyButton.disabled = false;
   setTranslating(false);
@@ -285,12 +364,22 @@ retryButton.addEventListener("click", () => {
 toggleSourceButton.addEventListener("click", () => {
   showingSource = !showingSource;
   sourceText.hidden = !showingSource;
+  translatedHtml.hidden = showingSource;
   toggleSourceButton.textContent = showingSource ? "訳文を表示" : "原文を表示";
 });
 
 async function copyRichTranslation() {
   const htmlFlavor = translatedHtml.innerHTML;
-  const plainFlavor = isHtmlMode ? (translatedHtml.textContent ?? "") : outputBuffer;
+  // sanitize が全部落とした等で textContent が空でも、元バッファへフォールバックして
+  // 無言の空コピーを避ける
+  const plainFlavor = isHtmlMode
+    ? translatedHtml.textContent || outputBuffer
+    : outputBuffer;
+
+  if (htmlFlavor.trim().length === 0) {
+    await navigator.clipboard.writeText(plainFlavor);
+    return;
+  }
 
   try {
     const item = new ClipboardItem({
@@ -309,6 +398,9 @@ copyButton.addEventListener("click", () => {
 
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
+    if (event.isComposing || event.keyCode === 229) {
+      return;
+    }
     event.preventDefault();
     event.stopPropagation();
     void getCurrentWindow().close();

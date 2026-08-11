@@ -24,7 +24,19 @@ type TranslationChunk = {
   done: boolean;
 };
 
+type HistoryRecord = {
+  id: string;
+  timestamp_ms: number;
+  source_preview: string;
+  translated_text: string;
+  is_html: boolean;
+  engine: string;
+};
+
 const label = getCurrentWindow().label;
+const popupMode = new URLSearchParams(window.location.search).get("mode") === "replay"
+  ? "replay"
+  : "capture";
 
 const stateLoading = document.getElementById("state-loading") as HTMLElement;
 const stateError = document.getElementById("state-error") as HTMLElement;
@@ -116,6 +128,48 @@ async function runCapture() {
   await startTranslation(input, result.html);
 }
 
+async function waitForReplay(): Promise<HistoryRecord> {
+  const maxAttempts = 40;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const record = await invoke<HistoryRecord | null>("get_history_replay", { label });
+    if (record) {
+      return record;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 80));
+  }
+  throw new Error("履歴の再表示がタイムアウトしました。");
+}
+
+async function runReplay() {
+  showState("loading");
+
+  const record = await waitForReplay();
+
+  headerMode.textContent = `${record.engine} · 履歴`;
+  sourceText.textContent = record.source_preview;
+  statusSource.textContent = "履歴から再表示";
+
+  isHtmlMode = record.is_html;
+  translatedText.textContent = "";
+  translatedHtml.innerHTML = "";
+
+  if (isHtmlMode) {
+    const sanitized = await invoke<string>("sanitize_html", { html: record.translated_text });
+    translatedHtml.innerHTML = sanitized;
+    translatedText.hidden = true;
+    translatedHtml.hidden = false;
+  } else {
+    translatedText.textContent = record.translated_text;
+    translatedText.hidden = false;
+    translatedHtml.hidden = true;
+  }
+
+  statusState.textContent = "✓ 完了";
+  toggleSourceButton.disabled = false;
+  copyButton.disabled = false;
+  showState("translation");
+}
+
 function listenForTranslationChunks() {
   getCurrentWindow().listen<TranslationChunk>("translate-chunk", (event) => {
     const chunk = event.payload;
@@ -141,6 +195,13 @@ async function finishTranslation() {
 }
 
 retryButton.addEventListener("click", () => {
+  if (popupMode === "replay") {
+    runReplay().catch((error: unknown) => {
+      errorMessage.textContent = error instanceof Error ? error.message : String(error);
+      showState("error");
+    });
+    return;
+  }
   void runCapture();
 });
 
@@ -165,6 +226,14 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
-listenForTranslationChunks();
-void renderEngineName();
-void runCapture();
+if (popupMode === "replay") {
+  runReplay().catch((error: unknown) => {
+    errorMessage.textContent = error instanceof Error ? error.message : String(error);
+    openSettingsButton.hidden = true;
+    showState("error");
+  });
+} else {
+  listenForTranslationChunks();
+  void renderEngineName();
+  void runCapture();
+}

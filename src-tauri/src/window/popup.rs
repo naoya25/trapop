@@ -18,6 +18,20 @@ pub struct PopupCounter(AtomicU32);
 #[derive(Default)]
 pub struct PopupStack(pub Mutex<Vec<(String, f64)>>);
 
+pub enum PopupMode {
+    Capture,
+    Replay,
+}
+
+impl PopupMode {
+    fn as_query(&self) -> &'static str {
+        match self {
+            Self::Capture => "capture",
+            Self::Replay => "replay",
+        }
+    }
+}
+
 fn next_label(app: &AppHandle) -> String {
     let counter = app.state::<PopupCounter>();
     let n = counter.0.fetch_add(1, Ordering::SeqCst);
@@ -82,14 +96,19 @@ fn ns_window_ref(window: &tauri::WebviewWindow) -> Result<&NSWindow, String> {
     Ok(unsafe { &*(ptr as *const NSWindow) })
 }
 
-pub fn spawn(app: &AppHandle, cursor_x: f64, cursor_y: f64) -> Result<String, String> {
+pub fn spawn(
+    app: &AppHandle,
+    cursor_x: f64,
+    cursor_y: f64,
+    mode: PopupMode,
+) -> Result<String, String> {
     let label = next_label(app);
     let (pos_x, pos_y) = stacked_position(app, cursor_x, cursor_y)?;
 
     let window = WebviewWindowBuilder::new(
         app,
         &label,
-        WebviewUrl::App(format!("popup/index.html?w={label}").into()),
+        WebviewUrl::App(format!("popup/index.html?w={label}&mode={}", mode.as_query()).into()),
     )
     .title("TraPoP")
     .inner_size(POPUP_WIDTH, POPUP_HEIGHT)

@@ -1,8 +1,11 @@
 pub mod popup;
 
+use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager};
+
+const TRAY_ICON_BYTES: &[u8] = include_bytes!("../../icons/icon-tray.png");
 
 pub fn setup_main_window(app: &AppHandle) -> tauri::Result<()> {
     if let Some(main) = app.get_webview_window("main") {
@@ -36,7 +39,11 @@ pub fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
     let quit = MenuItem::with_id(app, "quit", "終了", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open_settings, &close_all_popups, &quit])?;
 
+    let icon = Image::from_bytes(TRAY_ICON_BYTES)?;
+
     TrayIconBuilder::new()
+        .icon(icon)
+        .icon_as_template(true)
         .menu(&menu)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "open_settings" => show_main_window(app),

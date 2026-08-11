@@ -17,18 +17,24 @@ struct CaptureState(Mutex<HashMap<String, CaptureOutcome>>);
 #[derive(serde::Serialize, Clone)]
 #[serde(tag = "status", rename_all = "snake_case")]
 enum CaptureOutcome {
-    Ok { result: capture::CaptureResult },
-    Error { message: String },
+    Ok {
+        result: capture::CaptureResult,
+    },
+    Error {
+        message: String,
+        is_accessibility_error: bool,
+    },
 }
 
-fn capture_error_message(code: &str) -> String {
+fn capture_error_message(code: &str) -> (String, bool) {
     match code {
-        "accessibility_permission_required" => {
-            "アクセシビリティ権限が必要です。システム設定 → プライバシーとセキュリティ → \
-             アクセシビリティ で TraPoP を許可してください。"
-                .to_string()
-        }
-        other => format!("選択テキストの取得に失敗しました: {other}"),
+        "accessibility_permission_required" => (
+            "アクセシビリティ権限が必要です。下のボタンから設定を開き、TraPoP を許可してから \
+             再試行してください。"
+                .to_string(),
+            true,
+        ),
+        other => (format!("選択テキストの取得に失敗しました: {other}"), false),
     }
 }
 
@@ -63,9 +69,13 @@ fn trigger_capture(app: &AppHandle) {
 
             let outcome = match capture_result {
                 Ok(result) => CaptureOutcome::Ok { result },
-                Err(code) => CaptureOutcome::Error {
-                    message: capture_error_message(&code),
-                },
+                Err(code) => {
+                    let (message, is_accessibility_error) = capture_error_message(&code);
+                    CaptureOutcome::Error {
+                        message,
+                        is_accessibility_error,
+                    }
+                }
             };
 
             app_for_main
@@ -88,6 +98,15 @@ fn get_capture(state: tauri::State<CaptureState>, label: String) -> Option<Captu
 #[tauri::command]
 fn engine_name() -> &'static str {
     MockEngine.name()
+}
+
+#[tauri::command]
+fn open_accessibility_settings() -> Result<(), String> {
+    std::process::Command::new("open")
+        .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -125,6 +144,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_capture,
             engine_name,
+            open_accessibility_settings,
             start_translation
         ])
         .setup(|app| {

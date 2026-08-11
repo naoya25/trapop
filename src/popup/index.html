@@ -25,7 +25,10 @@
 
       <div class="state state--error" id="state-error" hidden>
         <p id="error-message"></p>
-        <button class="btn btn--primary" id="retry-button">再試行</button>
+        <div class="state__actions">
+          <button class="btn" id="open-settings-button" hidden>設定を開く</button>
+          <button class="btn btn--primary" id="retry-button">再試行</button>
+        </div>
       </div>
 
       <div class="translation" id="translation" hidden>

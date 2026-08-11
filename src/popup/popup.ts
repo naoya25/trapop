@@ -15,7 +15,7 @@ type CaptureResult = {
 
 type CaptureOutcome =
   | { status: "ok"; result: CaptureResult }
-  | { status: "error"; message: string };
+  | { status: "error"; message: string; is_accessibility_error: boolean };
 
 type TranslationChunk = {
   text: string;
@@ -29,6 +29,7 @@ const stateEmpty = document.getElementById("state-empty") as HTMLElement;
 const stateError = document.getElementById("state-error") as HTMLElement;
 const errorMessage = document.getElementById("error-message") as HTMLElement;
 const retryButton = document.getElementById("retry-button") as HTMLButtonElement;
+const openSettingsButton = document.getElementById("open-settings-button") as HTMLButtonElement;
 const translation = document.getElementById("translation") as HTMLElement;
 const sourceText = document.getElementById("source-text") as HTMLPreElement;
 const translatedText = document.getElementById("translated-text") as HTMLPreElement;
@@ -62,7 +63,11 @@ async function waitForCapture(): Promise<CaptureOutcome> {
     }
     await new Promise((resolve) => setTimeout(resolve, 80));
   }
-  return { status: "error", message: "選択テキストの取得がタイムアウトしました。" };
+  return {
+    status: "error",
+    message: "選択テキストの取得がタイムアウトしました。",
+    is_accessibility_error: false,
+  };
 }
 
 async function startTranslation(input: string) {
@@ -81,6 +86,7 @@ async function runCapture() {
 
   if (outcome.status === "error") {
     errorMessage.textContent = outcome.message;
+    openSettingsButton.hidden = !outcome.is_accessibility_error;
     showState("error");
     return;
   }
@@ -116,6 +122,10 @@ function listenForTranslationChunks() {
 
 retryButton.addEventListener("click", () => {
   void runCapture();
+});
+
+openSettingsButton.addEventListener("click", () => {
+  void invoke("open_accessibility_settings");
 });
 
 toggleSourceButton.addEventListener("click", () => {

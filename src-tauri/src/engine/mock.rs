@@ -12,7 +12,13 @@ impl TranslationEngine for MockEngine {
         "mock"
     }
 
-    async fn translate(&self, input: &TranslationInput, tx: UnboundedSender<TranslationChunk>) {
+    async fn translate(
+        &self,
+        input: &TranslationInput,
+        _lang_a: &str,
+        _lang_b: &str,
+        tx: UnboundedSender<TranslationChunk>,
+    ) {
         let body = match input {
             TranslationInput::Html(html) => structure_preserving_mock(html),
             TranslationInput::PlainText(text) => fixed_translation(text),
@@ -59,7 +65,12 @@ mod tests {
         let engine = MockEngine;
 
         engine
-            .translate(&TranslationInput::PlainText("hello world".to_string()), tx)
+            .translate(
+                &TranslationInput::PlainText("hello world".to_string()),
+                "日本語",
+                "英語",
+                tx,
+            )
             .await;
 
         let mut received_text = String::new();
@@ -81,7 +92,9 @@ mod tests {
         let engine = MockEngine;
         let html = "<ul><li>one</li><li>two</li></ul><p><strong>bold</strong></p>".to_string();
 
-        engine.translate(&TranslationInput::Html(html.clone()), tx).await;
+        engine
+            .translate(&TranslationInput::Html(html.clone()), "日本語", "英語", tx)
+            .await;
 
         let mut received_text = String::new();
         while let Some(chunk) = rx.recv().await {

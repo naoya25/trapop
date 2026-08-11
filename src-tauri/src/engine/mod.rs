@@ -41,13 +41,22 @@ impl TranslationInput {
 #[async_trait::async_trait]
 pub trait TranslationEngine: Send + Sync {
     fn name(&self) -> &'static str;
-    async fn translate(&self, input: &TranslationInput, tx: UnboundedSender<TranslationChunk>);
+    async fn translate(
+        &self,
+        input: &TranslationInput,
+        lang_a: &str,
+        lang_b: &str,
+        tx: UnboundedSender<TranslationChunk>,
+    );
 }
 
-pub fn system_prompt(is_html: bool) -> String {
-    let base = "あなたはプロの翻訳者です。与えられたテキストを自然な日本語に全文翻訳してください。\
+pub fn system_prompt(lang_a: &str, lang_b: &str, is_html: bool) -> String {
+    let base = format!(
+        "あなたはプロの翻訳者です。入力テキストが{lang_a}であれば{lang_b}に、\
+        {lang_b}であれば{lang_a}に全文翻訳してください。どちらの言語でもない場合は{lang_a}に翻訳してください。\
         要約・省略・意訳による情報の削減は禁止です。原文にある情報はすべて訳文に含めてください。\
-        出力は訳文のみとし、前置きや説明を含めないでください。";
+        出力は訳文のみとし、前置きや説明を含めないでください。"
+    );
 
     if is_html {
         format!(
@@ -56,7 +65,10 @@ pub fn system_prompt(is_html: bool) -> String {
             出力もHTMLのみとし、Markdownのコードフェンスや説明文を付けないでください。"
         )
     } else {
-        base.to_string()
+        format!(
+            "{base} 入力がMarkdown記法(見出し・リスト・コードフェンス・強調・リンク等)を含む場合は、\
+            記法そのものは変更せず本文のテキストのみを翻訳してください。コードフェンス内のコードは翻訳せず原文のまま保持してください。"
+        )
     }
 }
 

@@ -35,6 +35,25 @@
       </div>
 
       <div class="settings-group">
+        <span class="settings-label">言語ペア</span>
+        <div class="settings-row">
+          <select class="settings-select" id="lang-a-select">
+            <option value="日本語">日本語</option>
+            <option value="英語">英語</option>
+            <option value="中国語">中国語</option>
+            <option value="韓国語">韓国語</option>
+          </select>
+          <span>⇔</span>
+          <select class="settings-select" id="lang-b-select">
+            <option value="日本語">日本語</option>
+            <option value="英語">英語</option>
+            <option value="中国語">中国語</option>
+            <option value="韓国語">韓国語</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="settings-group">
         <label class="settings-label" for="engine-select">翻訳エンジン</label>
         <select class="settings-select" id="engine-select">
           <option value="auto">auto(キーがあれば openai、無ければ gemini)</option>

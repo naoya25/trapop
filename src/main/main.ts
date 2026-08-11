@@ -19,6 +19,8 @@ type SettingsView = {
   has_openai_key: boolean;
   has_gemini_key: boolean;
   effective_engine_name: string;
+  lang_a: string;
+  lang_b: string;
 };
 
 const tabHistory = document.getElementById("tab-history") as HTMLButtonElement;
@@ -125,6 +127,8 @@ getCurrentWindow().listen("history-appended", () => {
 const hotkeyDisplay = document.getElementById("hotkey-display") as HTMLElement;
 const hotkeyChangeButton = document.getElementById("hotkey-change-button") as HTMLButtonElement;
 const hotkeyHint = document.getElementById("hotkey-hint") as HTMLElement;
+const langASelect = document.getElementById("lang-a-select") as HTMLSelectElement;
+const langBSelect = document.getElementById("lang-b-select") as HTMLSelectElement;
 const engineSelect = document.getElementById("engine-select") as HTMLSelectElement;
 const openaiApiKeyInput = document.getElementById("openai-api-key-input") as HTMLInputElement;
 const openaiApiKeySaveButton = document.getElementById(
@@ -150,6 +154,8 @@ function acceleratorToLabel(accelerator: string): string {
 async function loadSettings() {
   const settings = await invoke<SettingsView>("get_settings");
   hotkeyDisplay.textContent = acceleratorToLabel(settings.hotkey);
+  langASelect.value = settings.lang_a;
+  langBSelect.value = settings.lang_b;
   engineSelect.value = settings.engine_choice;
   modelInput.value = settings.model_override ?? "";
   openaiApiKeyStatus.textContent = settings.has_openai_key ? "登録済み: ●●●●●●●●" : "未登録";
@@ -220,6 +226,16 @@ hotkeyChangeButton.addEventListener("click", () => {
   hotkeyHint.textContent = "キーを押してください(Escでキャンセル)";
   document.addEventListener("keydown", onHotkeyKeydown, true);
 });
+
+function saveLangPair() {
+  void invoke("set_lang_pair", {
+    langA: langASelect.value,
+    langB: langBSelect.value,
+  }).then(() => loadSettings());
+}
+
+langASelect.addEventListener("change", saveLangPair);
+langBSelect.addEventListener("change", saveLangPair);
 
 engineSelect.addEventListener("change", () => {
   void invoke("set_engine_choice", { choice: engineSelect.value }).then(() => loadSettings());

@@ -44,11 +44,13 @@ impl GeminiEngine {
     async fn stream_translation(
         &self,
         input: &TranslationInput,
+        lang_a: &str,
+        lang_b: &str,
         tx: &UnboundedSender<TranslationChunk>,
     ) -> Result<(), String> {
         let body = serde_json::json!({
             "systemInstruction": {
-                "parts": [{"text": super::system_prompt(input.is_html())}],
+                "parts": [{"text": super::system_prompt(lang_a, lang_b, input.is_html())}],
             },
             "contents": [
                 {"role": "user", "parts": [{"text": input.body()}]},
@@ -102,8 +104,14 @@ impl TranslationEngine for GeminiEngine {
         "gemini"
     }
 
-    async fn translate(&self, input: &TranslationInput, tx: UnboundedSender<TranslationChunk>) {
-        if let Err(err) = self.stream_translation(input, &tx).await {
+    async fn translate(
+        &self,
+        input: &TranslationInput,
+        lang_a: &str,
+        lang_b: &str,
+        tx: UnboundedSender<TranslationChunk>,
+    ) {
+        if let Err(err) = self.stream_translation(input, lang_a, lang_b, &tx).await {
             let _ = tx.send(TranslationChunk {
                 text: format!("翻訳中にエラーが発生しました: {err}"),
                 done: true,
@@ -209,9 +217,18 @@ mod tests {
 
     #[test]
     fn html_system_prompt_extends_plain_text_prompt() {
-        let plain = super::super::system_prompt(false);
-        let html = super::super::system_prompt(true);
-        assert!(html.starts_with(&plain));
+        let plain = super::super::system_prompt("日本語", "英語", false);
+        let html = super::super::system_prompt("日本語", "英語", true);
         assert!(html.contains("HTML"));
+        assert!(plain.contains("日本語"));
+        assert!(plain.contains("英語"));
+    }
+
+    #[test]
+    fn bidirectional_prompt_mentions_both_languages_and_fallback() {
+        let prompt = super::super::system_prompt("日本語", "英語", false);
+        assert!(prompt.contains("日本語であれば英語に"));
+        assert!(prompt.contains("英語であれば日本語に"));
+        assert!(prompt.contains("どちらの言語でもない場合は日本語に"));
     }
 }

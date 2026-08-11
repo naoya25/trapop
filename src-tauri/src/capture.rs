@@ -19,6 +19,13 @@ pub fn accessibility_trusted() -> bool {
     unsafe { AXIsProcessTrusted() }
 }
 
+#[derive(serde::Serialize, Clone, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureSource {
+    Selection,
+    Clipboard,
+}
+
 #[derive(serde::Serialize, Clone)]
 pub struct CaptureFlavor {
     pub flavor: String,
@@ -27,7 +34,7 @@ pub struct CaptureFlavor {
 
 #[derive(serde::Serialize, Clone)]
 pub struct CaptureResult {
-    pub used_fallback_clipboard: bool,
+    pub source: CaptureSource,
     pub plain_text: Option<String>,
     pub html: Option<String>,
     pub flavors: Vec<CaptureFlavor>,
@@ -111,24 +118,7 @@ fn simulate_cmd_c() -> Result<(), String> {
     Ok(())
 }
 
-pub fn capture_selection() -> Result<CaptureResult, String> {
-    if !accessibility_trusted() {
-        return Err("accessibility_permission_required".to_string());
-    }
-
-    let saved = snapshot_pasteboard();
-    let pb = pasteboard();
-    let change_count_before = pb.changeCount();
-
-    simulate_cmd_c()?;
-    thread::sleep(Duration::from_millis(150));
-
-    let change_count_after = pb.changeCount();
-    let used_fallback_clipboard = change_count_after == change_count_before;
-
-    let flavors = read_all_flavors();
-    restore_pasteboard(saved);
-
+fn build_result(flavors: Vec<CaptureFlavor>, source: CaptureSource) -> CaptureResult {
     let plain_text = flavors
         .iter()
         .find(|f| f.flavor == PLAIN_TEXT_FLAVOR)
@@ -138,10 +128,51 @@ pub fn capture_selection() -> Result<CaptureResult, String> {
         .find(|f| f.flavor == HTML_FLAVOR)
         .map(|f| f.content.clone());
 
-    Ok(CaptureResult {
-        used_fallback_clipboard,
+    CaptureResult {
+        source,
         plain_text,
         html,
         flavors,
-    })
+    }
+}
+
+fn capture_via_emulated_copy() -> Result<CaptureResult, String> {
+    let saved = snapshot_pasteboard();
+    let pb = pasteboard();
+    let change_count_before = pb.changeCount();
+
+    simulate_cmd_c()?;
+    thread::sleep(Duration::from_millis(150));
+
+    let change_count_after = pb.changeCount();
+    let new_selection_copied = change_count_after != change_count_before;
+
+    let flavors = read_all_flavors();
+    restore_pasteboard(saved);
+
+    let source = if new_selection_copied {
+        CaptureSource::Selection
+    } else {
+        CaptureSource::Clipboard
+    };
+
+    Ok(build_result(flavors, source))
+}
+
+fn capture_clipboard_only() -> CaptureResult {
+    build_result(read_all_flavors(), CaptureSource::Clipboard)
+}
+
+pub fn capture_selection() -> Result<CaptureResult, String> {
+    let result = if accessibility_trusted() {
+        capture_via_emulated_copy()?
+    } else {
+        capture_clipboard_only()
+    };
+
+    if result.plain_text.as_deref().unwrap_or("").is_empty() {
+        return Err("clipboard_empty".to_string());
+    }
+
+    Ok(result)
 }

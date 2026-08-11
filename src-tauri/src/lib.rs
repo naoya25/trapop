@@ -34,6 +34,10 @@ fn capture_error_message(code: &str) -> (String, bool) {
                 .to_string(),
             true,
         ),
+        "clipboard_empty" => (
+            "コピーしてからホットキーを押してください(⌘C → ⌥⇧⌘P)。".to_string(),
+            false,
+        ),
         other => (format!("選択テキストの取得に失敗しました: {other}"), false),
     }
 }

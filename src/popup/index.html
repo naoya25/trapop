@@ -19,10 +19,6 @@
         <span>選択テキストを取得中...</span>
       </div>
 
-      <div class="state state--empty" id="state-empty" hidden>
-        <p>選択テキストが取得できなかったため、クリップボードの内容を使用しました。</p>
-      </div>
-
       <div class="state state--error" id="state-error" hidden>
         <p id="error-message"></p>
         <div class="state__actions">
@@ -38,6 +34,7 @@
     </main>
 
     <footer class="status-bar">
+      <span class="status-bar__source" id="status-source"></span>
       <span class="status-bar__state" id="status-state">▍生成中</span>
       <span class="status-bar__spacer"></span>
       <button class="btn" id="toggle-source" disabled>原文を表示</button>

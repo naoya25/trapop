@@ -6,8 +6,10 @@ type CaptureFlavor = {
   content: string;
 };
 
+type CaptureSource = "selection" | "clipboard";
+
 type CaptureResult = {
-  used_fallback_clipboard: boolean;
+  source: CaptureSource;
   plain_text: string | null;
   html: string | null;
   flavors: CaptureFlavor[];
@@ -25,7 +27,6 @@ type TranslationChunk = {
 const label = getCurrentWindow().label;
 
 const stateLoading = document.getElementById("state-loading") as HTMLElement;
-const stateEmpty = document.getElementById("state-empty") as HTMLElement;
 const stateError = document.getElementById("state-error") as HTMLElement;
 const errorMessage = document.getElementById("error-message") as HTMLElement;
 const retryButton = document.getElementById("retry-button") as HTMLButtonElement;
@@ -33,10 +34,16 @@ const openSettingsButton = document.getElementById("open-settings-button") as HT
 const translation = document.getElementById("translation") as HTMLElement;
 const sourceText = document.getElementById("source-text") as HTMLPreElement;
 const translatedText = document.getElementById("translated-text") as HTMLPreElement;
+const statusSource = document.getElementById("status-source") as HTMLElement;
 const statusState = document.getElementById("status-state") as HTMLElement;
 const toggleSourceButton = document.getElementById("toggle-source") as HTMLButtonElement;
 const copyButton = document.getElementById("copy-translation") as HTMLButtonElement;
 const headerMode = document.querySelector(".header__mode") as HTMLElement;
+
+const SOURCE_LABEL: Record<CaptureSource, string> = {
+  selection: "選択テキストから翻訳",
+  clipboard: "クリップボードから翻訳",
+};
 
 let showingSource = false;
 
@@ -45,13 +52,10 @@ async function renderEngineName() {
   headerMode.textContent = `${name} · 和訳`;
 }
 
-function showState(state: "loading" | "empty" | "error" | "translation") {
+function showState(state: "loading" | "error" | "translation") {
   stateLoading.hidden = state !== "loading";
   stateError.hidden = state !== "error";
   translation.hidden = state !== "translation";
-  if (state !== "translation") {
-    stateEmpty.hidden = state !== "empty";
-  }
 }
 
 async function waitForCapture(): Promise<CaptureOutcome> {
@@ -94,16 +98,9 @@ async function runCapture() {
   const { result } = outcome;
   const input = result.plain_text ?? "";
   sourceText.textContent = input;
-
-  if (!input) {
-    showState("empty");
-    stateEmpty.textContent =
-      "選択テキストもクリップボードも空だったため、翻訳できませんでした。";
-    return;
-  }
+  statusSource.textContent = SOURCE_LABEL[result.source];
 
   showState("translation");
-  stateEmpty.hidden = !result.used_fallback_clipboard;
   await startTranslation(input);
 }
 

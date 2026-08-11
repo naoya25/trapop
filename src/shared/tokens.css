@@ -21,6 +21,9 @@
   --font-size-sm: 12px;
   --font-size-base: 13px;
   --font-size-lg: 14px;
+  --font-size-xl: 16px;
+  --font-size-2xl: 18px;
+  --font-size-3xl: 21px;
 
   --header-height: 28px;
 }

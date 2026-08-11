@@ -145,6 +145,8 @@ clearHistoryModal.addEventListener("click", (event) => {
 
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && !clearHistoryModal.hidden) {
+    event.preventDefault();
+    event.stopPropagation();
     closeClearHistoryModal();
   }
 });

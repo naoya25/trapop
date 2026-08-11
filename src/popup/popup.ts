@@ -309,6 +309,8 @@ copyButton.addEventListener("click", () => {
 
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
+    event.preventDefault();
+    event.stopPropagation();
     void getCurrentWindow().close();
   }
 });

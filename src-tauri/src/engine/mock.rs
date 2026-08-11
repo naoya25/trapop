@@ -1,4 +1,4 @@
-use super::{TranslationChunk, TranslationEngine};
+use super::{TranslationChunk, TranslationEngine, TranslationInput};
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -12,8 +12,8 @@ impl TranslationEngine for MockEngine {
         "mock"
     }
 
-    async fn translate(&self, input: &str, tx: UnboundedSender<TranslationChunk>) {
-        let body = fixed_translation(input);
+    async fn translate(&self, input: &TranslationInput, tx: UnboundedSender<TranslationChunk>) {
+        let body = fixed_translation(input.body());
         for word in body.split_inclusive(' ') {
             if tx
                 .send(TranslationChunk {
@@ -51,7 +51,9 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let engine = MockEngine;
 
-        engine.translate("hello world", tx).await;
+        engine
+            .translate(&TranslationInput::PlainText("hello world".to_string()), tx)
+            .await;
 
         let mut received_text = String::new();
         let mut saw_done = false;

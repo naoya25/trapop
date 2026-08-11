@@ -1,15 +1,17 @@
 mod capture;
 mod engine;
 mod hotkey;
+mod sanitize;
 mod window;
 
-use engine::mock::MockEngine;
-use engine::TranslationEngine;
+use engine::{TranslationEngine, TranslationInput};
 use std::collections::HashMap;
-use std::sync::Mutex;
-use tauri::{AppHandle, Emitter, Manager};
+use std::sync::{Arc, Mutex};
+use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 use tauri_plugin_global_shortcut::ShortcutState;
 use tokio::sync::mpsc;
+
+struct EngineHandle(Arc<dyn TranslationEngine>);
 
 #[derive(Default)]
 struct CaptureState(Mutex<HashMap<String, CaptureOutcome>>);
@@ -100,8 +102,8 @@ fn get_capture(state: tauri::State<CaptureState>, label: String) -> Option<Captu
 }
 
 #[tauri::command]
-fn engine_name() -> &'static str {
-    MockEngine.name()
+fn engine_name(engine: tauri::State<EngineHandle>) -> &'static str {
+    engine.0.name()
 }
 
 #[tauri::command]
@@ -114,19 +116,72 @@ fn open_accessibility_settings() -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn start_translation(app: AppHandle, label: String, input: String) -> Result<(), String> {
-    let engine = MockEngine;
+fn sanitize_html(html: String) -> String {
+    sanitize::sanitize_translation_html(&html)
+}
+
+#[tauri::command]
+async fn start_translation(
+    app: AppHandle,
+    engine: tauri::State<'_, EngineHandle>,
+    label: String,
+    input: String,
+    html: Option<String>,
+) -> Result<(), String> {
+    let Some(translation_input) = TranslationInput::from_capture(Some(input), html) else {
+        let _ = app.emit_to(
+            &label,
+            "translate-chunk",
+            &engine::TranslationChunk {
+                text: String::new(),
+                done: true,
+            },
+        );
+        return Ok(());
+    };
+
+    let engine = engine.0.clone();
     let (tx, mut rx) = mpsc::unbounded_channel();
+    let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel::<()>();
 
-    let engine_task = tokio::spawn(async move {
-        engine.translate(&input, tx).await;
-    });
-
-    while let Some(chunk) = rx.recv().await {
-        let _ = app.emit_to(&label, "translate-chunk", &chunk);
+    if let Some(window) = app.get_webview_window(&label) {
+        let cancel_tx = Mutex::new(Some(cancel_tx));
+        window.on_window_event(move |event| {
+            if matches!(event, WindowEvent::Destroyed) {
+                if let Some(tx) = cancel_tx.lock().unwrap().take() {
+                    let _ = tx.send(());
+                }
+            }
+        });
     }
 
-    engine_task.await.map_err(|e| e.to_string())
+    let engine_task = tokio::spawn(async move {
+        engine.translate(&translation_input, tx).await;
+    });
+
+    loop {
+        tokio::select! {
+            chunk = rx.recv() => {
+                match chunk {
+                    Some(chunk) => {
+                        let done = chunk.done;
+                        let _ = app.emit_to(&label, "translate-chunk", &chunk);
+                        if done {
+                            break;
+                        }
+                    }
+                    None => break,
+                }
+            }
+            _ = &mut cancel_rx => {
+                drop(rx);
+                break;
+            }
+        }
+    }
+
+    let _ = engine_task.await;
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -143,12 +198,14 @@ pub fn run() {
         )
         .plugin(tauri_plugin_opener::init())
         .manage(CaptureState::default())
+        .manage(EngineHandle(Arc::from(engine::resolve())))
         .manage(window::popup::PopupCounter::default())
         .manage(window::popup::PopupStack::default())
         .invoke_handler(tauri::generate_handler![
             get_capture,
             engine_name,
             open_accessibility_settings,
+            sanitize_html,
             start_translation
         ])
         .setup(|app| {

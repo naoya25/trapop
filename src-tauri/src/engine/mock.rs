@@ -13,7 +13,10 @@ impl TranslationEngine for MockEngine {
     }
 
     async fn translate(&self, input: &TranslationInput, tx: UnboundedSender<TranslationChunk>) {
-        let body = fixed_translation(input.body());
+        let body = match input {
+            TranslationInput::Html(html) => structure_preserving_mock(html),
+            TranslationInput::PlainText(text) => fixed_translation(text),
+        };
         for word in body.split_inclusive(' ') {
             if tx
                 .send(TranslationChunk {
@@ -31,6 +34,10 @@ impl TranslationEngine for MockEngine {
             done: true,
         });
     }
+}
+
+fn structure_preserving_mock(html: &str) -> String {
+    format!("<p>[モック翻訳・構造保持]</p>{html}")
 }
 
 fn fixed_translation(input: &str) -> String {
@@ -66,5 +73,21 @@ mod tests {
 
         assert!(saw_done, "stream must terminate with a done chunk");
         assert!(!received_text.is_empty(), "stream must yield translated text");
+    }
+
+    #[tokio::test]
+    async fn preserves_html_structure_in_stream() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let engine = MockEngine;
+        let html = "<ul><li>one</li><li>two</li></ul><p><strong>bold</strong></p>".to_string();
+
+        engine.translate(&TranslationInput::Html(html.clone()), tx).await;
+
+        let mut received_text = String::new();
+        while let Some(chunk) = rx.recv().await {
+            received_text.push_str(&chunk.text);
+        }
+
+        assert!(received_text.contains(&html), "original HTML structure must be echoed intact");
     }
 }

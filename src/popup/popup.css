@@ -92,6 +92,40 @@ body {
   border-bottom: 1px solid var(--border);
 }
 
+.translation__html {
+  font-family: var(--font-sans);
+  font-size: var(--font-size-lg);
+  line-height: 1.6;
+}
+
+.translation__html p,
+.translation__html ul,
+.translation__html ol,
+.translation__html pre,
+.translation__html blockquote,
+.translation__html table {
+  margin: 0 0 var(--space-3);
+}
+
+.translation__html code {
+  font-family: ui-monospace, "SF Mono", monospace;
+  background: var(--bg-elevated);
+  border-radius: var(--radius-sm);
+  padding: 0 4px;
+}
+
+.translation__html pre {
+  background: var(--bg-elevated);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2);
+  overflow-x: auto;
+}
+
+.translation__html pre code {
+  background: none;
+  padding: 0;
+}
+
 .status-bar {
   display: flex;
   align-items: center;

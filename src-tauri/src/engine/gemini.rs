@@ -231,4 +231,11 @@ mod tests {
         assert!(prompt.contains("英語であれば日本語に"));
         assert!(prompt.contains("どちらの言語でもない場合は日本語に"));
     }
+
+    #[test]
+    fn plain_text_prompt_forbids_html_tags() {
+        let prompt = super::super::system_prompt("日本語", "英語", false);
+        assert!(prompt.contains("HTMLタグは出力に一切含めないでください"));
+        assert!(prompt.contains("<div>"));
+    }
 }

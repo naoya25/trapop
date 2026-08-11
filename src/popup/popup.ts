@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { marked } from "marked";
+import { safeStreamPreview } from "./preview";
 
 type TranslationChunk = {
   text: string;
@@ -214,7 +215,7 @@ function listenForTranslationChunks() {
       return;
     }
     outputBuffer += chunk.text;
-    translatedText.textContent = outputBuffer;
+    translatedText.textContent = safeStreamPreview(outputBuffer);
   });
 }
 
@@ -222,8 +223,10 @@ async function finishTranslation() {
   const rendered = isHtmlMode
     ? await invoke<string>("sanitize_html", { html: outputBuffer })
     : await renderMarkdown(outputBuffer);
-  translatedHtml.innerHTML = rendered;
+
   translatedText.hidden = true;
+  translatedText.textContent = "";
+  translatedHtml.innerHTML = rendered;
   translatedHtml.hidden = false;
   statusState.textContent = "✓ 完了";
   toggleSourceButton.disabled = false;

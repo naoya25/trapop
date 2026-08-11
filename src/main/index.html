@@ -102,6 +102,19 @@
       </div>
     </section>
 
+    <div class="modal-overlay" id="clear-history-modal" hidden>
+      <div class="modal" role="alertdialog" aria-labelledby="clear-history-modal-title">
+        <p class="modal__title" id="clear-history-modal-title">
+          翻訳履歴をすべて削除しますか？
+        </p>
+        <p class="modal__body">この操作は取り消せません。</p>
+        <div class="modal__actions">
+          <button class="btn" id="clear-history-cancel-button">キャンセル</button>
+          <button class="btn btn--danger" id="clear-history-confirm-button">削除</button>
+        </div>
+      </div>
+    </div>
+
     <script type="module" src="./main.ts"></script>
   </body>
 </html>

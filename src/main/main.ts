@@ -111,11 +111,42 @@ async function loadHistory() {
   renderHistory(records);
 }
 
-clearHistoryButton.addEventListener("click", () => {
-  if (!window.confirm("翻訳履歴をすべて削除しますか？この操作は取り消せません。")) {
-    return;
+const clearHistoryModal = document.getElementById("clear-history-modal") as HTMLElement;
+const clearHistoryCancelButton = document.getElementById(
+  "clear-history-cancel-button",
+) as HTMLButtonElement;
+const clearHistoryConfirmButton = document.getElementById(
+  "clear-history-confirm-button",
+) as HTMLButtonElement;
+
+function openClearHistoryModal() {
+  clearHistoryModal.hidden = false;
+}
+
+function closeClearHistoryModal() {
+  clearHistoryModal.hidden = true;
+}
+
+clearHistoryButton.addEventListener("click", () => openClearHistoryModal());
+clearHistoryCancelButton.addEventListener("click", () => closeClearHistoryModal());
+
+clearHistoryConfirmButton.addEventListener("click", () => {
+  void invoke("clear_history").then(() => {
+    closeClearHistoryModal();
+    return loadHistory();
+  });
+});
+
+clearHistoryModal.addEventListener("click", (event) => {
+  if (event.target === clearHistoryModal) {
+    closeClearHistoryModal();
   }
-  void invoke("clear_history").then(() => loadHistory());
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !clearHistoryModal.hidden) {
+    closeClearHistoryModal();
+  }
 });
 
 getCurrentWindow().listen("history-appended", () => {

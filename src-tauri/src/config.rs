@@ -5,6 +5,10 @@ use tauri::{AppHandle, Manager};
 
 const CONFIG_FILE: &str = "config.json";
 const DEFAULT_HOTKEY: &str = "shift+alt+super+KeyP";
+const DEFAULT_LANG_A: &str = "日本語";
+const DEFAULT_LANG_B: &str = "英語";
+pub const DEFAULT_POPUP_WIDTH: f64 = 420.0;
+pub const DEFAULT_POPUP_HEIGHT: f64 = 320.0;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -45,10 +49,34 @@ pub struct AppConfig {
     pub engine_choice: EngineChoice,
     #[serde(default)]
     pub model_override: Option<String>,
+    #[serde(default = "default_lang_a")]
+    pub lang_a: String,
+    #[serde(default = "default_lang_b")]
+    pub lang_b: String,
+    #[serde(default = "default_popup_width")]
+    pub popup_width: f64,
+    #[serde(default = "default_popup_height")]
+    pub popup_height: f64,
 }
 
 fn default_hotkey() -> String {
     DEFAULT_HOTKEY.to_string()
+}
+
+fn default_lang_a() -> String {
+    DEFAULT_LANG_A.to_string()
+}
+
+fn default_lang_b() -> String {
+    DEFAULT_LANG_B.to_string()
+}
+
+fn default_popup_width() -> f64 {
+    DEFAULT_POPUP_WIDTH
+}
+
+fn default_popup_height() -> f64 {
+    DEFAULT_POPUP_HEIGHT
 }
 
 impl Default for AppConfig {
@@ -57,6 +85,10 @@ impl Default for AppConfig {
             hotkey: default_hotkey(),
             engine_choice: EngineChoice::default(),
             model_override: None,
+            lang_a: default_lang_a(),
+            lang_b: default_lang_b(),
+            popup_width: default_popup_width(),
+            popup_height: default_popup_height(),
         }
     }
 }
@@ -96,6 +128,10 @@ mod tests {
         let config = parse_config("not json");
         assert_eq!(config.hotkey, DEFAULT_HOTKEY);
         assert_eq!(config.engine_choice, EngineChoice::Auto);
+        assert_eq!(config.lang_a, DEFAULT_LANG_A);
+        assert_eq!(config.lang_b, DEFAULT_LANG_B);
+        assert_eq!(config.popup_width, DEFAULT_POPUP_WIDTH);
+        assert_eq!(config.popup_height, DEFAULT_POPUP_HEIGHT);
     }
 
     #[test]
@@ -104,6 +140,10 @@ mod tests {
             hotkey: "control+alt+KeyJ".to_string(),
             engine_choice: EngineChoice::Openai,
             model_override: Some("gpt-4.1".to_string()),
+            lang_a: "中国語".to_string(),
+            lang_b: "韓国語".to_string(),
+            popup_width: 500.0,
+            popup_height: 400.0,
         };
         let json = serde_json::to_string(&config).unwrap();
         let parsed = parse_config(&json);
@@ -111,6 +151,24 @@ mod tests {
         assert_eq!(parsed.hotkey, config.hotkey);
         assert_eq!(parsed.engine_choice, EngineChoice::Openai);
         assert_eq!(parsed.model_override.as_deref(), Some("gpt-4.1"));
+        assert_eq!(parsed.lang_a, "中国語");
+        assert_eq!(parsed.lang_b, "韓国語");
+        assert_eq!(parsed.popup_width, 500.0);
+        assert_eq!(parsed.popup_height, 400.0);
+    }
+
+    #[test]
+    fn missing_lang_fields_fall_back_to_defaults() {
+        let config = parse_config(r#"{"hotkey":"control+alt+KeyJ"}"#);
+        assert_eq!(config.lang_a, DEFAULT_LANG_A);
+        assert_eq!(config.lang_b, DEFAULT_LANG_B);
+    }
+
+    #[test]
+    fn missing_popup_size_falls_back_to_defaults() {
+        let config = parse_config(r#"{"hotkey":"control+alt+KeyJ"}"#);
+        assert_eq!(config.popup_width, DEFAULT_POPUP_WIDTH);
+        assert_eq!(config.popup_height, DEFAULT_POPUP_HEIGHT);
     }
 
     #[test]

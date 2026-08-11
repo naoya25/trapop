@@ -1,5 +1,7 @@
 mod capture;
+mod config;
 mod engine;
+mod history;
 mod hotkey;
 mod sanitize;
 mod window;
@@ -11,10 +13,30 @@ use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 use tauri_plugin_global_shortcut::ShortcutState;
 use tokio::sync::mpsc;
 
-struct EngineHandle(Arc<dyn TranslationEngine>);
+struct EngineHandle(Mutex<Arc<dyn TranslationEngine>>);
+
+impl EngineHandle {
+    fn current(&self) -> Arc<dyn TranslationEngine> {
+        self.0.lock().unwrap().clone()
+    }
+
+    fn set(&self, engine: Arc<dyn TranslationEngine>) {
+        *self.0.lock().unwrap() = engine;
+    }
+}
+
+fn build_engine(config: &config::AppConfig) -> Arc<dyn TranslationEngine> {
+    Arc::from(engine::resolve(
+        config.engine_choice.as_str(),
+        config.model_override.as_deref(),
+    ))
+}
 
 #[derive(Default)]
 struct CaptureState(Mutex<HashMap<String, CaptureOutcome>>);
+
+#[derive(Default)]
+struct HistoryReplayState(Mutex<HashMap<String, history::HistoryRecord>>);
 
 #[derive(serde::Serialize, Clone)]
 #[serde(tag = "status", rename_all = "snake_case")]
@@ -26,6 +48,15 @@ enum CaptureOutcome {
         message: String,
         is_accessibility_error: bool,
     },
+}
+
+#[derive(serde::Serialize)]
+struct SettingsView {
+    hotkey: String,
+    engine_choice: &'static str,
+    model_override: Option<String>,
+    has_api_key: bool,
+    effective_engine_name: &'static str,
 }
 
 fn capture_error_message(code: &str) -> (String, bool) {
@@ -65,7 +96,14 @@ fn trigger_capture(app: &AppHandle) {
 
         let app_for_main = app.clone();
         let _ = app.run_on_main_thread(move || {
-            let label = match window::popup::spawn(&app_for_main, x, y) {
+            window::hide_main_window_before_popup(&app_for_main);
+
+            let label = match window::popup::spawn(
+                &app_for_main,
+                x,
+                y,
+                window::popup::PopupMode::Capture,
+            ) {
                 Ok(label) => label,
                 Err(e) => {
                     eprintln!("[trapop] popup spawn failed: {e}");
@@ -103,7 +141,7 @@ fn get_capture(state: tauri::State<CaptureState>, label: String) -> Option<Captu
 
 #[tauri::command]
 fn engine_name(engine: tauri::State<EngineHandle>) -> &'static str {
-    engine.0.name()
+    engine.current().name()
 }
 
 #[tauri::command]
@@ -118,6 +156,114 @@ fn open_accessibility_settings() -> Result<(), String> {
 #[tauri::command]
 fn sanitize_html(html: String) -> String {
     sanitize::sanitize_translation_html(&html)
+}
+
+#[tauri::command]
+fn list_history(app: AppHandle) -> Result<Vec<history::HistoryRecord>, String> {
+    history::load_recent(&app)
+}
+
+#[tauri::command]
+fn clear_history(app: AppHandle) -> Result<(), String> {
+    history::clear(&app)
+}
+
+#[tauri::command]
+fn open_history_popup(
+    app: AppHandle,
+    replay_state: tauri::State<HistoryReplayState>,
+    id: String,
+) -> Result<(), String> {
+    let record = history::find(&app, &id)?.ok_or_else(|| "履歴が見つかりません".to_string())?;
+    let (x, y) = cursor_position();
+    let label = window::popup::spawn(&app, x, y, window::popup::PopupMode::Replay)?;
+
+    replay_state
+        .0
+        .lock()
+        .unwrap()
+        .insert(label.clone(), record);
+
+    let _ = app.emit_to(&label, "history-replay-ready", ());
+    Ok(())
+}
+
+#[tauri::command]
+fn get_history_replay(
+    state: tauri::State<HistoryReplayState>,
+    label: String,
+) -> Option<history::HistoryRecord> {
+    state.0.lock().unwrap().get(&label).cloned()
+}
+
+#[tauri::command]
+fn get_settings(app: AppHandle, engine: tauri::State<EngineHandle>) -> SettingsView {
+    let cfg = config::load(&app);
+    SettingsView {
+        hotkey: cfg.hotkey,
+        engine_choice: cfg.engine_choice.as_str(),
+        model_override: cfg.model_override,
+        has_api_key: engine::openai::has_stored_key(),
+        effective_engine_name: engine.current().name(),
+    }
+}
+
+#[tauri::command]
+fn set_hotkey(app: AppHandle, accelerator: String) -> Result<(), String> {
+    let spec = hotkey::HotkeySpec::from_accelerator(&accelerator)?;
+    hotkey::set_hotkey(&app, &spec)?;
+
+    let mut cfg = config::load(&app);
+    cfg.hotkey = spec.to_accelerator();
+    config::save(&app, &cfg)
+}
+
+#[tauri::command]
+fn set_engine_choice(
+    app: AppHandle,
+    engine: tauri::State<EngineHandle>,
+    choice: String,
+) -> Result<(), String> {
+    let engine_choice = config::EngineChoice::parse(&choice)?;
+
+    let mut cfg = config::load(&app);
+    cfg.engine_choice = engine_choice;
+    config::save(&app, &cfg)?;
+
+    engine.set(build_engine(&cfg));
+    Ok(())
+}
+
+#[tauri::command]
+fn set_model_override(
+    app: AppHandle,
+    engine: tauri::State<EngineHandle>,
+    model: Option<String>,
+) -> Result<(), String> {
+    let mut cfg = config::load(&app);
+    cfg.model_override = model.filter(|m| !m.trim().is_empty());
+    config::save(&app, &cfg)?;
+
+    engine.set(build_engine(&cfg));
+    Ok(())
+}
+
+#[tauri::command]
+fn save_api_key(
+    app: AppHandle,
+    engine: tauri::State<EngineHandle>,
+    key: String,
+) -> Result<(), String> {
+    let trimmed = key.trim();
+    if trimmed.is_empty() {
+        return Err("APIキーが空です".to_string());
+    }
+
+    engine::openai::store_api_key(trimmed)?;
+
+    let cfg = config::load(&app);
+    engine.set(build_engine(&cfg));
+    Ok(())
 }
 
 #[tauri::command]
@@ -140,7 +286,11 @@ async fn start_translation(
         return Ok(());
     };
 
-    let engine = engine.0.clone();
+    let engine_handle = engine.current();
+    let engine_name = engine_handle.name();
+    let is_html = translation_input.is_html();
+    let source_body = translation_input.body().to_string();
+
     let (tx, mut rx) = mpsc::unbounded_channel();
     let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel::<()>();
 
@@ -156,17 +306,21 @@ async fn start_translation(
     }
 
     let engine_task = tokio::spawn(async move {
-        engine.translate(&translation_input, tx).await;
+        engine_handle.translate(&translation_input, tx).await;
     });
 
+    let mut full_text = String::new();
+    let mut completed = false;
     loop {
         tokio::select! {
             chunk = rx.recv() => {
                 match chunk {
                     Some(chunk) => {
                         let done = chunk.done;
+                        full_text.push_str(&chunk.text);
                         let _ = app.emit_to(&label, "translate-chunk", &chunk);
                         if done {
+                            completed = true;
                             break;
                         }
                     }
@@ -181,6 +335,14 @@ async fn start_translation(
     }
 
     let _ = engine_task.await;
+
+    if completed && !full_text.trim().is_empty() {
+        let record = history::HistoryRecord::new(&source_body, full_text, is_html, engine_name);
+        if history::append(&app, &record).is_ok() {
+            let _ = app.emit("history-appended", ());
+        }
+    }
+
     Ok(())
 }
 
@@ -198,7 +360,7 @@ pub fn run() {
         )
         .plugin(tauri_plugin_opener::init())
         .manage(CaptureState::default())
-        .manage(EngineHandle(Arc::from(engine::resolve())))
+        .manage(HistoryReplayState::default())
         .manage(window::popup::PopupCounter::default())
         .manage(window::popup::PopupStack::default())
         .invoke_handler(tauri::generate_handler![
@@ -206,13 +368,28 @@ pub fn run() {
             engine_name,
             open_accessibility_settings,
             sanitize_html,
+            list_history,
+            clear_history,
+            open_history_popup,
+            get_history_replay,
+            get_settings,
+            set_hotkey,
+            set_engine_choice,
+            set_model_override,
+            save_api_key,
             start_translation
         ])
         .setup(|app| {
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
             let handle = app.handle();
-            hotkey::register(handle, &hotkey::HotkeySpec::default())?;
+            let cfg = config::load(handle);
+            handle.manage(EngineHandle(Mutex::new(build_engine(&cfg))));
+
+            let hotkey_spec =
+                hotkey::HotkeySpec::from_accelerator(&cfg.hotkey).unwrap_or_default();
+            hotkey::register(handle, &hotkey_spec)?;
+
             window::setup_main_window(handle)?;
             window::setup_tray(handle)?;
 

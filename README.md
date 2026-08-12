@@ -4,7 +4,7 @@
 
 普段は起動せず、使うときだけランチャー(Raycast 等)や Dock から起動する。ウィンドウは今いる画面に1枚だけ開き、閉じるとアプリごと終了する。
 
-- 仕様: `docs/spec-single-window-redesign.md`
+- 仕様: `docs/spec-single-window-redesign.md`・`docs/spec-mini-panel.md`
 
 ## 使い方
 
@@ -17,6 +17,29 @@
 - API キーは macOS Keychain に保存される
 
 アプリはクリップボードを読まない(貼り付けはユーザー操作)ため、アクセシビリティ等の特別な権限は不要。
+
+## ミニパネル(フルスクリーン重畳)
+
+`trapop://new` を開くと、メイン窓を表示せずに今いる Space(フルスクリーンアプリ上も含む)へ翻訳専用の小さいパネルだけ出す。パネルの赤ボタン/Esc で閉じてもアプリは終了せず、次回は再表示だけで即座に開く。仕様は `docs/spec-mini-panel.md` を参照。
+
+Raycast から呼ぶには Script Command を登録する。
+
+1. `~/.raycast/scripts` などスクリプト用ディレクトリに以下の内容で `trapop-new.sh` を作成し、実行権限を付ける(`chmod +x`)
+
+   ```sh
+   #!/bin/bash
+   # @raycast.schemaVersion 1
+   # @raycast.title TraPoP: New Translation
+   # @raycast.mode silent
+   # @raycast.icon 🌐
+
+   open -g "trapop://new"
+   ```
+
+2. Raycast の Extensions 設定で該当ディレクトリを Script Commands のフォルダとして追加する
+3. 好みで "TraPoP: New Translation" コマンドにホットキーを割り当てる
+
+`trapop://` の scheme 登録は macOS の LaunchServices が初回起動時に行うため、`trapop://new` を初めて使う前に一度 TraPoP を通常起動(Dock 等)しておくこと。
 
 ## 開発
 

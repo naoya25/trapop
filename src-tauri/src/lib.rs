@@ -282,6 +282,11 @@ async fn save_api_key(
 }
 
 #[tauri::command]
+fn close_panel(app: AppHandle) {
+    window::panel::hide_panel(&app);
+}
+
+#[tauri::command]
 fn cancel_translation(
     window: tauri::WebviewWindow,
     translation_registry: tauri::State<TranslationRegistry>,
@@ -440,7 +445,10 @@ async fn start_translation(
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_nspanel::init())
+        .plugin(tauri_plugin_deep_link::init())
         .manage(TranslationRegistry::default())
+        .manage(window::DeepLinkSeen::default())
         .invoke_handler(tauri::generate_handler![
             sanitize_html,
             list_history,
@@ -454,24 +462,40 @@ pub fn run() {
             list_available_models,
             save_api_key,
             start_translation,
-            cancel_translation
+            cancel_translation,
+            close_panel
         ])
         .setup(|app| {
             let handle = app.handle();
             let cfg = config::load(handle);
             handle.manage(EngineHandle(Mutex::new(build_engine(&cfg))));
 
-            window::setup_main_window(handle)?;
+            // メイン窓はここでは表示しない。RunEvent::Ready 後、deep link 起動で
+            // なかったと分かってから window::show_main_window で表示する
+            window::setup_main_window(handle, false)?;
 
             Ok(())
         })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app_handle, event| {
+        .run(|app_handle, event| match event {
             // 閉じるボタン(CloseRequested→exit)も ⌘Q(terminate→LoopDestroyed)も
             // 最終的に RunEvent::Exit を通る。ExitRequested は ⌘Q 経路で発火しない
-            if let tauri::RunEvent::Exit = event {
-                window::flush_window_size(app_handle);
+            tauri::RunEvent::Exit => window::flush_window_size(app_handle),
+            tauri::RunEvent::Ready => {
+                window::schedule_main_window_show_unless_deep_link(app_handle);
             }
+            tauri::RunEvent::Opened { urls } => {
+                if urls.iter().any(window::deep_link::is_new_panel_url) {
+                    app_handle.state::<window::DeepLinkSeen>().mark();
+                    let _ = window::panel::show_or_create_panel(app_handle);
+                }
+            }
+            tauri::RunEvent::Reopen { has_visible_windows, .. } => {
+                if !has_visible_windows {
+                    window::show_main_window(app_handle);
+                }
+            }
+            _ => {}
         });
 }

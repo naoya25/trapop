@@ -20,13 +20,20 @@
         "height": 600,
         "minWidth": 520,
         "minHeight": 360,
-        "visible": true,
+        "visible": false,
         "titleBarStyle": "Visible"
       }
     ],
     "security": {
       "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ipc: http://ipc.localhost",
       "devCsp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ipc: http://ipc.localhost ws://localhost:1420 http://localhost:1420"
+    }
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["trapop"]
+      }
     }
   },
   "bundle": {

@@ -1,11 +1,40 @@
+pub mod deep_link;
+pub mod panel;
+
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::time::Duration;
 use tauri::{AppHandle, Manager};
 
 // 終了時にウィンドウはもう生きていない(閉じるボタン経路では drop 済み)ため、
 // サイズはリサイズイベントの時点で控えておき、終了時はキャッシュを書くだけにする
 static LAST_WINDOW_SIZE: Mutex<Option<(f64, f64)>> = Mutex::new(None);
 
-pub fn setup_main_window(app: &AppHandle) -> tauri::Result<()> {
+const MAIN_SHOW_DELAY_MS: u64 = 100;
+
+// RunEvent::Opened(deep link)が Ready の前後どちらで届くか保証が無いため、
+// Ready 後に短い猶予を置いてから「deep link 起動ではなかった」ときだけメイン窓を出す。
+pub struct DeepLinkSeen(AtomicBool);
+
+impl Default for DeepLinkSeen {
+    fn default() -> Self {
+        Self(AtomicBool::new(false))
+    }
+}
+
+impl DeepLinkSeen {
+    pub fn mark(&self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+
+    fn was_seen(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+// show=false のときはサイズ復元とイベント配線だけ行い、表示はしない
+// (deep link 起動でメイン窓を隠したまま保つため)
+pub fn setup_main_window(app: &AppHandle, show: bool) -> tauri::Result<()> {
     if let Some(main) = app.get_webview_window("main") {
         let cfg = crate::config::load(app);
         if let Err(e) = main.set_size(tauri::Size::Logical(tauri::LogicalSize {
@@ -39,8 +68,36 @@ pub fn setup_main_window(app: &AppHandle) -> tauri::Result<()> {
             }
             _ => {}
         });
+
+        if show {
+            main.show()?;
+            main.set_focus()?;
+        }
     }
     Ok(())
+}
+
+pub fn show_main_window(app: &AppHandle) {
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.show();
+        let _ = main.set_focus();
+    }
+}
+
+// RunEvent::Ready ハンドラから呼ぶ。deep link 起動が Ready より後に届く場合に
+// 備えて短い猶予を置き、その間に DeepLinkSeen が立たなければメイン窓を出す
+pub fn schedule_main_window_show_unless_deep_link(app: &AppHandle) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(MAIN_SHOW_DELAY_MS));
+        let app_for_main = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            let seen = app_for_main.state::<DeepLinkSeen>().was_seen();
+            if !seen {
+                show_main_window(&app_for_main);
+            }
+        });
+    });
 }
 
 // フロントのリサイズ保存は debounce されているため、終了直前のサイズは

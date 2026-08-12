@@ -3,7 +3,7 @@
   "identifier": "panel",
   "description": "Capability for the mini panel window",
   "windows": [
-    "panel"
+    "panel-*"
   ],
   "permissions": [
     "core:default",

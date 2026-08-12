@@ -281,9 +281,10 @@ async fn save_api_key(
     Ok(())
 }
 
+// label は引数で受けず呼び出し元ウィンドウから取る(他パネルを閉じさせない)
 #[tauri::command]
-fn close_panel(app: AppHandle) {
-    window::panel::hide_panel(&app);
+fn close_panel(app: AppHandle, window: tauri::WebviewWindow) {
+    window::panel::hide_panel(&app, window.label());
 }
 
 #[tauri::command]

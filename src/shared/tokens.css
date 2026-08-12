@@ -1,42 +1,159 @@
 :root {
-  --bg: #ffffff;
-  --bg-elevated: #f5f5f4;
-  --fg: #18181b;
-  --fg-muted: #6b6b6f;
-  --border: #e2e2e0;
-  --accent: #1a7f4e;
-  --accent-fg: #ffffff;
-  --error: #b3261e;
+  /* ---- Primitive: gray 12-step (dark-first, #0a0a0a〜#151517 帯) ---- */
+  --gray-1: oklch(9% 0.002 260);
+  --gray-2: oklch(11.5% 0.003 260);
+  --gray-3: oklch(14.5% 0.004 260);
+  --gray-4: oklch(17.5% 0.004 260);
+  --gray-5: oklch(21% 0.005 260);
+  --gray-6: oklch(25.5% 0.005 260);
+  --gray-7: oklch(31.5% 0.006 260);
+  --gray-8: oklch(40% 0.007 260);
+  --gray-9: oklch(52% 0.008 260);
+  --gray-10: oklch(60% 0.007 260);
+  --gray-11: oklch(75% 0.005 260);
+  --gray-12: oklch(96% 0 0);
 
-  --radius-sm: 4px;
-  --radius-md: 8px;
+  /* ---- Primitive: accent (Linear purple) ---- */
+  --accent-9: oklch(58% 0.19 275);
+  --accent-10: color-mix(in oklch, var(--accent-9) 88%, white);
+  --accent-11: color-mix(in oklch, var(--accent-9) 85%, black);
 
+  /* ---- Primitive: danger (削除系。accent とは別枠) ---- */
+  --danger-9: oklch(58% 0.2 25);
+  --danger-10: color-mix(in oklch, var(--danger-9) 88%, white);
+  --danger-11: color-mix(in oklch, var(--danger-9) 85%, black);
+
+  /* ---- Semantic: surface ---- */
+  --color-bg-canvas: var(--gray-1);
+  --color-bg-subtle: var(--gray-2);
+  --color-bg-default: var(--gray-3);
+  --color-bg-elevated: var(--gray-3);
+  --color-bg-overlay: oklch(0% 0 0 / 0.6);
+  --color-bg-hover: oklch(100% 0 0 / 0.05);
+  --color-bg-active: oklch(100% 0 0 / 0.08);
+
+  /* ---- Semantic: text ---- */
+  --color-fg-default: var(--gray-12);
+  --color-fg-muted: var(--gray-10);
+  --color-fg-subtle: var(--gray-9);
+  --color-fg-on-accent: oklch(99% 0 0);
+
+  /* ---- Semantic: border (dark = hairline 主役) ---- */
+  --color-border-default: oklch(100% 0 0 / 0.06);
+  --color-border-strong: oklch(100% 0 0 / 0.1);
+  --color-border-focus: var(--accent-9);
+
+  /* ---- Semantic: accent / danger ---- */
+  --color-accent-default: var(--accent-9);
+  --color-accent-hover: var(--accent-10);
+  --color-accent-pressed: var(--accent-11);
+  --color-danger-default: var(--danger-9);
+  --color-danger-hover: var(--danger-10);
+  --color-danger-pressed: var(--danger-11);
+
+  /* ---- Semantic: shadow (dark = 控えめ、border が主役) ---- */
+  --shadow-sm: none;
+  --shadow-md: 0 4px 12px -2px oklch(0% 0 0 / 0.35);
+  --shadow-lg: 0 12px 32px -6px oklch(0% 0 0 / 0.45);
+  --shadow-xl: 0 20px 48px -8px oklch(0% 0 0 / 0.5);
+
+  /* ---- Type scale ---- */
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, "SF Pro Text", "Hiragino Kaku Gothic ProN", "Hiragino Sans",
+    sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Menlo", monospace;
+
+  --text-2xs: 0.6875rem; /* 11px */
+  --text-xs: 0.75rem; /* 12px */
+  --text-sm: 0.8125rem; /* 13px */
+  --text-base: 0.875rem; /* 14px */
+  --text-lg: 1rem; /* 16px */
+  --text-xl: 1.125rem; /* 18px */
+  --text-2xl: 1.3125rem; /* 21px */
+
+  --leading-tight: 1.1;
+  --leading-snug: 1.3;
+  --leading-normal: 1.4285; /* 20/14 */
+  --leading-relaxed: 1.6;
+
+  --weight-normal: 425;
+  --weight-medium: 510;
+  --weight-semibold: 590;
+
+  /* ---- Spacing (4/8pt) ---- */
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
   --space-4: 16px;
-  --space-5: 24px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
 
-  --font-sans: -apple-system, "SF Pro Text", "Hiragino Sans", sans-serif;
-  --font-size-sm: 12px;
-  --font-size-base: 13px;
-  --font-size-lg: 14px;
-  --font-size-xl: 16px;
-  --font-size-2xl: 18px;
-  --font-size-3xl: 21px;
+  /* ---- Radius 階層 ---- */
+  --radius-xs: 4px; /* badge */
+  --radius-sm: 6px; /* input */
+  --radius-md: 8px; /* button */
+  --radius-lg: 12px; /* card / history item */
+  --radius-xl: 16px; /* modal */
+  --radius-full: 9999px;
 
+  /* ---- Motion ---- */
+  --ease-out-quart: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-emphasized: cubic-bezier(0.2, 0, 0, 1);
+  --ease-in-quart: cubic-bezier(0.5, 0, 0.75, 0);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  --duration-instant: 50ms;
+  --duration-fast: 100ms;
+  --duration-normal: 150ms;
+  --duration-medium: 200ms;
+  --duration-slow: 300ms;
+
+  --focus-ring-width: 2px;
+  --focus-ring-offset: 2px;
 }
 
-@media (prefers-color-scheme: dark) {
+@media (prefers-color-scheme: light) {
   :root {
-    --bg: #1c1c1e;
-    --bg-elevated: #26262a;
-    --fg: #f2f2f0;
-    --fg-muted: #9a9a9e;
-    --border: #38383c;
-    --accent: #2fa06a;
-    --accent-fg: #0c1a12;
-    --error: #e0776d;
+    --gray-1: oklch(99% 0 0);
+    --gray-2: oklch(97.5% 0.002 260);
+    --gray-3: oklch(95% 0.003 260);
+    --gray-4: oklch(92% 0.004 260);
+    --gray-5: oklch(88.5% 0.004 260);
+    --gray-6: oklch(84% 0.005 260);
+    --gray-7: oklch(77% 0.006 260);
+    --gray-8: oklch(65% 0.007 260);
+    --gray-9: oklch(54% 0.008 260);
+    --gray-10: oklch(46% 0.008 260);
+    --gray-11: oklch(36% 0.007 260);
+    --gray-12: oklch(16% 0.005 260);
+
+    --color-bg-canvas: var(--gray-1);
+    --color-bg-subtle: var(--gray-2);
+    --color-bg-default: var(--gray-1);
+    --color-bg-elevated: var(--gray-1);
+    --color-bg-overlay: oklch(20% 0 0 / 0.35);
+    --color-bg-hover: oklch(0% 0 0 / 0.035);
+    --color-bg-active: oklch(0% 0 0 / 0.06);
+
+    --color-border-default: oklch(0% 0 0 / 0.08);
+    --color-border-strong: oklch(0% 0 0 / 0.14);
+
+    --shadow-sm: 0 1px 2px 0 oklch(0% 0 0 / 0.04), 0 1px 1px 0 oklch(0% 0 0 / 0.03);
+    --shadow-md:
+      0 2px 4px -1px oklch(0% 0 0 / 0.06),
+      0 4px 8px -2px oklch(0% 0 0 / 0.04),
+      0 0 0 1px oklch(0% 0 0 / 0.04);
+    --shadow-lg:
+      0 4px 8px -2px oklch(0% 0 0 / 0.06),
+      0 12px 24px -4px oklch(0% 0 0 / 0.08),
+      0 0 0 1px oklch(0% 0 0 / 0.04);
+    --shadow-xl:
+      0 8px 16px -4px oklch(0% 0 0 / 0.08),
+      0 24px 48px -8px oklch(0% 0 0 / 0.12),
+      0 0 0 1px oklch(0% 0 0 / 0.04);
   }
 }
 
@@ -47,7 +164,19 @@
 body {
   margin: 0;
   font-family: var(--font-sans);
-  font-size: var(--font-size-base);
-  color: var(--fg);
-  background: var(--bg);
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
+  font-weight: var(--weight-medium);
+  color: var(--color-fg-default);
+  background: var(--color-bg-canvas);
+  -webkit-font-smoothing: antialiased;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }

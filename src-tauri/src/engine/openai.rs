@@ -22,11 +22,15 @@ impl std::error::Error for MissingApiKeyError {}
 pub struct OpenAiEngine {
     api_key: String,
     model: String,
+    custom_prompt: Option<String>,
     client: reqwest::Client,
 }
 
 impl OpenAiEngine {
-    pub fn from_environment(model_override: Option<&str>) -> Result<Self, MissingApiKeyError> {
+    pub fn from_environment(
+        model_override: Option<&str>,
+        custom_prompt: Option<&str>,
+    ) -> Result<Self, MissingApiKeyError> {
         let api_key = resolve_api_key().ok_or(MissingApiKeyError)?;
         let model = model_override
             .filter(|m| !m.trim().is_empty())
@@ -37,6 +41,7 @@ impl OpenAiEngine {
         Ok(Self {
             api_key,
             model,
+            custom_prompt: custom_prompt.map(str::to_string),
             client: reqwest::Client::new(),
         })
     }
@@ -52,7 +57,7 @@ impl OpenAiEngine {
             "model": self.model,
             "stream": true,
             "messages": [
-                {"role": "system", "content": super::system_prompt(lang_a, lang_b, input.is_html())},
+                {"role": "system", "content": super::system_prompt(lang_a, lang_b, input.is_html(), self.custom_prompt.as_deref())},
                 {"role": "user", "content": input.body()},
             ],
         });
@@ -141,6 +146,56 @@ fn forward_event(event: &str, tx: &UnboundedSender<TranslationChunk>) -> bool {
         }
     }
     true
+}
+
+// chat/completions で翻訳に使えるテキスト系モデルだけに絞る
+const EXCLUDED_MODEL_KEYWORDS: &[&str] = &[
+    "audio",
+    "realtime",
+    "image",
+    "tts",
+    "transcribe",
+    "whisper",
+    "embedding",
+    "moderation",
+    "dall-e",
+    "search",
+    "computer-use",
+    "codex",
+    "instruct",
+];
+
+pub async fn list_models() -> Result<Vec<String>, String> {
+    let api_key = resolve_api_key().ok_or("APIキーが未設定です")?;
+    let response = reqwest::Client::new()
+        .get("https://api.openai.com/v1/models")
+        .bearer_auth(&api_key)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !response.status().is_success() {
+        return Err(super::user_facing_api_error(
+            "OpenAI",
+            response.status().as_u16(),
+        ));
+    }
+
+    let value: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
+    let mut models: Vec<String> = value["data"]
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .filter_map(|m| m["id"].as_str())
+                .filter(|id| id.starts_with("gpt-") || id.starts_with("o"))
+                .filter(|id| !EXCLUDED_MODEL_KEYWORDS.iter().any(|kw| id.contains(kw)))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    models.sort();
+    Ok(models)
 }
 
 fn resolve_api_key() -> Option<String> {

@@ -11,15 +11,16 @@
   },
   "app": {
     "withGlobalTauri": false,
-    "macOSPrivateApi": true,
     "windows": [
       {
         "label": "main",
         "title": "TraPoP",
         "url": "main/index.html",
-        "width": 720,
-        "height": 480,
-        "visible": false,
+        "width": 860,
+        "height": 600,
+        "minWidth": 520,
+        "minHeight": 360,
+        "visible": true,
         "titleBarStyle": "Visible"
       }
     ],

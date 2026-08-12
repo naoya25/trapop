@@ -1,69 +1,60 @@
-pub mod popup;
+use std::sync::Mutex;
+use tauri::{AppHandle, Manager};
 
-use tauri::image::Image;
-use tauri::menu::{Menu, MenuItem};
-use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Emitter, Manager};
-
-const TRAY_ICON_BYTES: &[u8] = include_bytes!("../../icons/icon-tray.png");
+// 終了時にウィンドウはもう生きていない(閉じるボタン経路では drop 済み)ため、
+// サイズはリサイズイベントの時点で控えておき、終了時はキャッシュを書くだけにする
+static LAST_WINDOW_SIZE: Mutex<Option<(f64, f64)>> = Mutex::new(None);
 
 pub fn setup_main_window(app: &AppHandle) -> tauri::Result<()> {
     if let Some(main) = app.get_webview_window("main") {
-        main.hide()?;
+        let cfg = crate::config::load(app);
+        if let Err(e) = main.set_size(tauri::Size::Logical(tauri::LogicalSize {
+            width: cfg.window_width,
+            height: cfg.window_height,
+        })) {
+            // 失敗してもアプリは使える。開発時に気づけるよう stderr にだけ残す
+            eprintln!("[trapop] window size restore failed: {e}");
+        }
 
-        // 🔴で閉じると既定では destroy され「設定...」から二度と開けなくなるため、
-        // 閉じる操作は hide に読み替える。
+        let app_for_event = app.clone();
         let main_for_event = main.clone();
-        main.on_window_event(move |event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = main_for_event.hide();
-                let _ = main_for_event.emit_to("main", "main-hidden", ());
+        main.on_window_event(move |event| match event {
+            tauri::WindowEvent::Resized(size) => match main_for_event.scale_factor() {
+                Ok(scale) => {
+                    let logical = size.to_logical::<f64>(scale);
+                    // 不正値(最小化の 0×0 等)はキャッシュに入れない。直前の正当な
+                    // サイズを保持し続けることで終了時保存が空振りしない
+                    if !crate::config::is_valid_window_size(logical.width, logical.height) {
+                        return;
+                    }
+                    match LAST_WINDOW_SIZE.lock() {
+                        Ok(mut cache) => *cache = Some((logical.width, logical.height)),
+                        Err(e) => eprintln!("[trapop] window size cache failed: {e}"),
+                    }
+                }
+                Err(e) => eprintln!("[trapop] window size cache failed: {e}"),
+            },
+            tauri::WindowEvent::CloseRequested { .. } => {
+                app_for_event.exit(0);
             }
+            _ => {}
         });
     }
     Ok(())
 }
 
-pub fn show_main_window(app: &AppHandle) {
-    if let Some(main) = app.get_webview_window("main") {
-        let _ = main.show();
-        let _ = main.set_focus();
-        let _ = app.emit_to("main", "main-shown", ());
+// フロントのリサイズ保存は debounce されているため、終了直前のサイズは
+// ここで同期保存する(リサイズ直後に閉じても・⌘Q でも保存が飛ばない)
+pub fn flush_window_size(app: &AppHandle) {
+    // キャッシュは検証済みの値しか持たないため無条件に書ける。
+    // 空(setup の set_size 由来の Resized が来る前に終了)なら保存済みの値のままでよい
+    let Some((width, height)) = LAST_WINDOW_SIZE.lock().ok().and_then(|cache| *cache) else {
+        return;
+    };
+    if let Err(e) = crate::config::update(app, |cfg| {
+        cfg.window_width = width;
+        cfg.window_height = height;
+    }) {
+        eprintln!("[trapop] window size save failed: {e}");
     }
-}
-
-/// メイン窓(通常ウィンドウ)が表示されたまま存在すると popup 生成時に Space ジャンプが
-/// 再発する(spike 実測)。ホットキー起動直前にメイン窓を隠して回避する。
-pub fn hide_main_window_before_popup(app: &AppHandle) {
-    if let Some(main) = app.get_webview_window("main") {
-        if main.is_visible().unwrap_or(false) {
-            let _ = main.hide();
-            let _ = main.emit_to("main", "main-hidden", ());
-        }
-    }
-}
-
-pub fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
-    let open_settings = MenuItem::with_id(app, "open_settings", "設定...", true, None::<&str>)?;
-    let close_all_popups =
-        MenuItem::with_id(app, "close_all_popups", "すべての popup を閉じる", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "終了", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&open_settings, &close_all_popups, &quit])?;
-
-    let icon = Image::from_bytes(TRAY_ICON_BYTES)?;
-
-    TrayIconBuilder::new()
-        .icon(icon)
-        .icon_as_template(true)
-        .menu(&menu)
-        .on_menu_event(|app, event| match event.id.as_ref() {
-            "open_settings" => show_main_window(app),
-            "close_all_popups" => popup::close_all(app),
-            "quit" => app.exit(0),
-            _ => {}
-        })
-        .build(app)?;
-
-    Ok(())
 }

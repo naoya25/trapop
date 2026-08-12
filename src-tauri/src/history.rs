@@ -89,8 +89,8 @@ fn history_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join(HISTORY_FILE))
 }
 
-// append + rotate は read-all → write-all を含み非原子。複数 popup の翻訳が
-// 同時完了しても履歴が消えないよう、プロセス内 lock で直列化する。
+// append + rotate は read-all → write-all を含み非原子。複数の翻訳・rotate が
+// 並行して完了しても履歴が消えないよう、プロセス内 lock で直列化する。
 static APPEND_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 // バイトトリガー未満でも件数上限が効くよう、N 回に1回は全読み rotate を強制する
@@ -150,7 +150,14 @@ fn rotate_if_needed(path: &PathBuf) -> Result<(), String> {
 
     let mut rewritten = keep.join("\n");
     rewritten.push('\n');
-    fs::write(path, rewritten).map_err(|e| e.to_string())
+    // ウィンドウを閉じると即プロセス終了するため、書き戻し中に落ちても
+    // 履歴が切り詰まらないよう temp + rename で原子的に置換する
+    let tmp = path.with_extension("jsonl.tmp");
+    fs::write(&tmp, rewritten).map_err(|e| e.to_string())?;
+    fs::rename(&tmp, path).map_err(|e| {
+        let _ = fs::remove_file(&tmp);
+        e.to_string()
+    })
 }
 
 fn recent_from_lines(content: &str, limit: usize) -> Vec<HistoryRecord> {
@@ -171,10 +178,6 @@ pub fn load_recent(app: &AppHandle) -> Result<Vec<HistoryRecord>, String> {
     }
     let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
     Ok(recent_from_lines(&content, HISTORY_DISPLAY_LIMIT))
-}
-
-pub fn find(app: &AppHandle, id: &str) -> Result<Option<HistoryRecord>, String> {
-    Ok(load_recent(app)?.into_iter().find(|record| record.id == id))
 }
 
 pub fn clear(app: &AppHandle) -> Result<(), String> {

@@ -1,16 +1,13 @@
 mod config;
 mod engine;
 mod history;
-mod hotkey;
 mod sanitize;
 mod translation_registry;
 mod window;
 
 use engine::{TranslationEngine, TranslationInput};
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
-use tauri_plugin_global_shortcut::ShortcutState;
 use tokio::sync::mpsc;
 use translation_registry::TranslationRegistry;
 
@@ -36,6 +33,7 @@ fn build_engine(config: &config::AppConfig) -> EngineState {
     let resolved = engine::resolve(
         config.engine_choice.as_str(),
         config.model_override.as_deref(),
+        config.custom_prompt.as_deref(),
     );
     EngineState {
         engine: Arc::from(resolved.engine),
@@ -43,29 +41,15 @@ fn build_engine(config: &config::AppConfig) -> EngineState {
     }
 }
 
-#[derive(Default)]
-pub(crate) struct HistoryReplayState(pub(crate) Mutex<HashMap<String, history::HistoryRecord>>);
-
-// 起動時のホットキー登録失敗を保持し、設定画面に表示する(stderr だけだと
-// 「押しても何も起きないアプリ」に見えるため)
-#[derive(Default)]
-struct HotkeyStatus(Mutex<Option<String>>);
-
 #[derive(serde::Serialize)]
 struct SettingsView {
-    hotkey: String,
-    hotkey_error: Option<String>,
     engine_choice: &'static str,
     model_override: Option<String>,
+    custom_prompt: Option<String>,
+    default_prompt: &'static str,
     has_openai_key: bool,
     has_gemini_key: bool,
     effective_engine_name: &'static str,
-    lang_a: String,
-    lang_b: String,
-}
-
-#[derive(serde::Serialize)]
-struct LangPairView {
     lang_a: String,
     lang_b: String,
 }
@@ -78,32 +62,6 @@ struct TranslateChunkEvent {
     error: bool,
 }
 
-fn cursor_position() -> (f64, f64) {
-    use core_graphics::event::CGEvent;
-    use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
-
-    if let Ok(source) = CGEventSource::new(CGEventSourceStateID::CombinedSessionState) {
-        if let Ok(event) = CGEvent::new(source) {
-            let point = event.location();
-            return (point.x, point.y);
-        }
-    }
-    (200.0, 200.0)
-}
-
-fn open_paste_popup(app: &AppHandle) {
-    let app_for_main = app.clone();
-    let _ = app.run_on_main_thread(move || {
-        let (x, y) = cursor_position();
-        window::hide_main_window_before_popup(&app_for_main);
-
-        if let Err(e) = window::popup::spawn(&app_for_main, x, y, window::popup::PopupMode::Paste)
-        {
-            eprintln!("[trapop] popup spawn failed: {e}");
-        }
-    });
-}
-
 // キー未設定のプレースホルダ(MockEngine)を "mock" と見せない。
 // mock は設定で選べる正規の選択肢なので、未設定状態と区別できる名前を返す。
 fn effective_engine_label(engine: &EngineHandle) -> &'static str {
@@ -113,11 +71,6 @@ fn effective_engine_label(engine: &EngineHandle) -> &'static str {
     } else {
         engine_handle.name()
     }
-}
-
-#[tauri::command]
-fn engine_name(engine: tauri::State<EngineHandle>) -> &'static str {
-    effective_engine_label(&engine)
 }
 
 // 長文の ammonia パースは CPU バウンドなので spawn_blocking で逃がす。
@@ -143,86 +96,24 @@ async fn clear_history(app: AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())?
 }
 
-// popup::spawn は NSScreen 参照のためメインスレッド必須。同期 command が
-// メインスレッドで走るという実装詳細に依存せず、run_on_main_thread で明示する。
-#[tauri::command]
-async fn open_history_popup(app: AppHandle, id: String) -> Result<(), String> {
-    let app_for_find = app.clone();
-    let record = tauri::async_runtime::spawn_blocking(move || history::find(&app_for_find, &id))
-        .await
-        .map_err(|e| e.to_string())??
-        .ok_or_else(|| "履歴が見つかりません".to_string())?;
-
-    let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
-    let app_for_main = app.clone();
-    app.run_on_main_thread(move || {
-        let result = (|| -> Result<(), String> {
-            let (x, y) = cursor_position();
-            let label =
-                window::popup::spawn(&app_for_main, x, y, window::popup::PopupMode::Replay)?;
-
-            app_for_main
-                .state::<HistoryReplayState>()
-                .0
-                .lock()
-                .unwrap()
-                .insert(label, record);
-
-            // 受け渡しは popup 側のポーリング(get_history_replay)で行う。
-            // event 通知は webview の JS ロード前に emit されて必ず失われるため使わない。
-            Ok(())
-        })();
-        let _ = tx.send(result);
-    })
-    .map_err(|e| e.to_string())?;
-
-    rx.await.map_err(|e| e.to_string())?
-}
-
-// remove ではなく clone を返す。消してしまうと履歴 popup の「再試行」が
-// 二度と record を取れず必ずタイムアウトする。掃除は popup Destroyed 側が担う。
-// label は引数で受けず呼び出し元ウィンドウから取る(他 popup の record を覗けない)。
-#[tauri::command]
-fn get_history_replay(
-    window: tauri::WebviewWindow,
-    state: tauri::State<HistoryReplayState>,
-) -> Option<history::HistoryRecord> {
-    state.0.lock().unwrap().get(window.label()).cloned()
-}
-
 // Keychain 存在確認(security プロセス2回)とファイル読みはブロッキングなので
 // spawn_blocking で逃がす。
 #[tauri::command]
 async fn get_settings(
     app: AppHandle,
     engine: tauri::State<'_, EngineHandle>,
-    hotkey_status: tauri::State<'_, HotkeyStatus>,
 ) -> Result<SettingsView, String> {
     let effective_engine_name = effective_engine_label(&engine);
-    let hotkey_error = hotkey_status.0.lock().unwrap().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let cfg = config::load(&app);
         SettingsView {
-            hotkey: cfg.hotkey,
-            hotkey_error,
             engine_choice: cfg.engine_choice.as_str(),
             model_override: cfg.model_override,
+            custom_prompt: cfg.custom_prompt,
+            default_prompt: engine::DEFAULT_PROMPT_TEMPLATE,
             has_openai_key: engine::openai::has_stored_key(),
             has_gemini_key: engine::gemini::has_stored_key(),
             effective_engine_name,
-            lang_a: cfg.lang_a,
-            lang_b: cfg.lang_b,
-        }
-    })
-    .await
-    .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn get_lang_pair(app: AppHandle) -> Result<LangPairView, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let cfg = config::load(&app);
-        LangPairView {
             lang_a: cfg.lang_a,
             lang_b: cfg.lang_b,
         }
@@ -261,61 +152,20 @@ async fn set_lang_pair(app: AppHandle, lang_a: String, lang_b: String) -> Result
 }
 
 #[tauri::command]
-async fn save_popup_size(app: AppHandle, width: f64, height: f64) -> Result<(), String> {
-    if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
-        return Err("不正なポップアップサイズです".to_string());
+async fn save_window_size(app: AppHandle, width: f64, height: f64) -> Result<(), String> {
+    if !config::is_valid_window_size(width, height) {
+        return Err("不正なウィンドウサイズです".to_string());
     }
 
     tauri::async_runtime::spawn_blocking(move || {
         config::update(&app, |cfg| {
-            cfg.popup_width = width;
-            cfg.popup_height = height;
+            cfg.window_width = width;
+            cfg.window_height = height;
         })
         .map(|_| ())
     })
     .await
     .map_err(|e| e.to_string())?
-}
-
-// 設定ファイル読み書きは spawn_blocking へ、ホットキー登録(OS API)は
-// メインスレッドへ、それぞれ明示的に振り分ける。
-#[tauri::command]
-async fn set_hotkey(app: AppHandle, accelerator: String) -> Result<(), String> {
-    let spec = hotkey::HotkeySpec::from_accelerator(&accelerator)?;
-
-    let app_for_load = app.clone();
-    let old_hotkey =
-        tauri::async_runtime::spawn_blocking(move || config::load(&app_for_load).hotkey)
-            .await
-            .map_err(|e| e.to_string())?;
-    let old_spec = hotkey::HotkeySpec::from_accelerator(&old_hotkey).ok();
-
-    let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
-    let app_for_main = app.clone();
-    app.run_on_main_thread(move || {
-        let _ = tx.send(hotkey::set_hotkey(&app_for_main, &spec, old_spec.as_ref()));
-    })
-    .map_err(|e| e.to_string())?;
-    rx.await.map_err(|e| e.to_string())??;
-
-    let app_for_save = app.clone();
-    let save_result = tauri::async_runtime::spawn_blocking(move || {
-        config::update(&app_for_save, |cfg| cfg.hotkey = spec.to_accelerator()).map(|_| ())
-    })
-    .await
-    .map_err(|e| e.to_string())?;
-
-    // 保存に失敗したら OS 側の登録を旧キーへ戻し、「今は効くが再起動で戻る」乖離を防ぐ。
-    // 起動時の失敗表示のクリアは、登録・保存の両方が成功したときだけ行う。
-    if save_result.is_ok() {
-        *app.state::<HotkeyStatus>().0.lock().unwrap() = None;
-    } else if let Some(old) = old_spec {
-        let app_for_revert = app.clone();
-        let _ = app.run_on_main_thread(move || {
-            let _ = hotkey::set_hotkey(&app_for_revert, &old, Some(&spec));
-        });
-    }
-    save_result
 }
 
 // エンジン再構築は Keychain 読み(security プロセス)を含むため spawn_blocking で逃がす。
@@ -369,6 +219,39 @@ async fn set_model_override(
     Ok(())
 }
 
+// 空・空白のみは None(=組み込みプロンプト)に正規化する。エンジンが
+// 生成時にプロンプトを保持するため、保存後にエンジンを組み直す。
+#[tauri::command]
+async fn set_custom_prompt(
+    app: AppHandle,
+    engine: tauri::State<'_, EngineHandle>,
+    prompt: Option<String>,
+) -> Result<(), String> {
+    let prompt = prompt
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty());
+
+    let state = tauri::async_runtime::spawn_blocking(move || -> Result<EngineState, String> {
+        let cfg = config::update(&app, |cfg| cfg.custom_prompt = prompt)?;
+        Ok(build_engine(&cfg))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    engine.set(state);
+    Ok(())
+}
+
+// 各プロバイダの ListModels API から翻訳に使えるモデル名を取得する。
+// キー未設定・通信失敗は Err で返し、フロント側は静的リストへフォールバックする。
+#[tauri::command]
+async fn list_available_models(provider: String) -> Result<Vec<String>, String> {
+    match provider.as_str() {
+        "openai" => engine::openai::list_models().await,
+        "gemini" => engine::gemini::list_models().await,
+        other => Err(format!("不明なプロバイダです: {other}")),
+    }
+}
+
 // Keychain 書き込み(security プロセス・許可ダイアログの可能性)を含むため
 // spawn_blocking で逃がす。
 #[tauri::command]
@@ -407,7 +290,7 @@ fn cancel_translation(
     translation_registry.cancel(window.label(), Some(request_id));
 }
 
-// label は引数で受けず呼び出し元ウィンドウから取る(別 popup へのなりすまし不可)。
+// label は引数で受けず呼び出し元ウィンドウから取る(なりすまし不可)。
 #[tauri::command]
 async fn start_translation(
     app: AppHandle,
@@ -516,7 +399,7 @@ async fn start_translation(
                         }
                     }
                     // 全 sender drop(エンジンが done/error を送らず終了)は異常終了。
-                    // 「✓ 完了」に見せず、エラーとして popup に理由を出す。
+                    // 「✓ 完了」に見せず、エラーとして理由を出す。
                     None => {
                         let _ = app.emit_to(
                             &label,
@@ -556,58 +439,39 @@ async fn start_translation(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(
-            tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(|app, _shortcut, event| {
-                    if event.state() == ShortcutState::Pressed {
-                        open_paste_popup(app);
-                    }
-                })
-                .build(),
-        )
         .plugin(tauri_plugin_opener::init())
-        .manage(HistoryReplayState::default())
-        .manage(HotkeyStatus::default())
-        .manage(window::popup::PopupCounter::default())
-        .manage(window::popup::PopupStack::default())
         .manage(TranslationRegistry::default())
         .invoke_handler(tauri::generate_handler![
-            engine_name,
             sanitize_html,
             list_history,
             clear_history,
-            open_history_popup,
-            get_history_replay,
             get_settings,
-            get_lang_pair,
             set_lang_pair,
-            save_popup_size,
-            set_hotkey,
+            save_window_size,
             set_engine_choice,
             set_model_override,
+            set_custom_prompt,
+            list_available_models,
             save_api_key,
             start_translation,
             cancel_translation
         ])
         .setup(|app| {
-            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
-
             let handle = app.handle();
             let cfg = config::load(handle);
             handle.manage(EngineHandle(Mutex::new(build_engine(&cfg))));
 
-            let hotkey_spec =
-                hotkey::HotkeySpec::from_accelerator(&cfg.hotkey).unwrap_or_default();
-            if let Err(e) = hotkey::register(handle, &hotkey_spec) {
-                eprintln!("[trapop] hotkey registration failed (app continues without hotkey): {e}");
-                *handle.state::<HotkeyStatus>().0.lock().unwrap() = Some(e);
-            }
-
             window::setup_main_window(handle)?;
-            window::setup_tray(handle)?;
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            // 閉じるボタン(CloseRequested→exit)も ⌘Q(terminate→LoopDestroyed)も
+            // 最終的に RunEvent::Exit を通る。ExitRequested は ⌘Q 経路で発火しない
+            if let tauri::RunEvent::Exit = event {
+                window::flush_window_size(app_handle);
+            }
+        });
 }

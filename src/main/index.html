@@ -8,102 +8,146 @@
     <link rel="stylesheet" href="./main.css" />
   </head>
   <body>
-    <div class="tabs" role="tablist">
-      <button class="tab tab--active" id="tab-history" role="tab" aria-selected="true">
-        履歴
-      </button>
-      <button class="tab" id="tab-settings" role="tab" aria-selected="false">設定</button>
+    <div class="layout">
+      <aside class="sidebar">
+        <button class="sidebar__new-button" id="new-translation-button">+ 新規翻訳</button>
+
+        <div class="sidebar__history">
+          <div class="sidebar__history-header">
+            <span class="sidebar__history-title" id="history-count"></span>
+            <button class="btn btn--danger btn--small" id="clear-history-button">全削除</button>
+          </div>
+          <ul class="history-list" id="history-list"></ul>
+          <p class="sidebar__placeholder" id="history-empty" hidden>翻訳履歴はまだありません。</p>
+          <p class="sidebar__placeholder sidebar__placeholder--error" id="history-error" hidden></p>
+        </div>
+
+        <button class="sidebar__settings-button" id="settings-button">設定</button>
+      </aside>
+
+      <main class="content">
+        <section class="view" id="view-translate">
+          <div class="view__meta" id="view-meta"></div>
+
+          <div class="paste-form" id="paste-form">
+            <div
+              class="paste-form__input"
+              id="paste-input"
+              contenteditable="true"
+              data-placeholder="ここに貼り付け(⌘V)、または入力して ⌘Enter"
+            ></div>
+            <div class="paste-form__actions">
+              <span class="paste-form__hint">⌘Enter で翻訳</span>
+              <button class="btn btn--primary" id="translate-button">翻訳</button>
+            </div>
+          </div>
+
+          <div class="state state--error" id="state-error" hidden>
+            <p id="error-message"></p>
+            <div class="state__actions">
+              <button class="btn btn--primary" id="retry-button">再試行</button>
+            </div>
+          </div>
+
+          <div class="translation" id="translation" hidden>
+            <pre class="translation__text" id="source-text" hidden></pre>
+            <pre class="translation__text" id="translated-text"></pre>
+            <div class="translation__html" id="translated-html" hidden></div>
+          </div>
+
+          <footer class="status-bar">
+            <span class="status-bar__source" id="status-source"></span>
+            <span class="status-bar__state" id="status-state"></span>
+            <span class="status-bar__spacer"></span>
+            <button class="btn" id="toggle-source" disabled>原文を表示</button>
+            <button class="btn" id="copy-translation" disabled>訳をコピー</button>
+          </footer>
+        </section>
+
+        <section class="view" id="view-settings" hidden>
+          <div class="settings-group">
+            <span class="settings-label">言語ペア</span>
+            <div class="settings-row">
+              <select class="settings-select" id="lang-a-select">
+                <option value="日本語">日本語</option>
+                <option value="英語">英語</option>
+                <option value="中国語">中国語</option>
+                <option value="韓国語">韓国語</option>
+              </select>
+              <span>⇔</span>
+              <select class="settings-select" id="lang-b-select">
+                <option value="日本語">日本語</option>
+                <option value="英語">英語</option>
+                <option value="中国語">中国語</option>
+                <option value="韓国語">韓国語</option>
+              </select>
+            </div>
+            <p class="settings-hint" id="lang-status"></p>
+          </div>
+
+          <div class="settings-group">
+            <label class="settings-label" for="engine-select">翻訳エンジン</label>
+            <select class="settings-select" id="engine-select">
+              <option value="auto">auto(キーがあれば openai、無ければ gemini)</option>
+              <option value="openai">openai</option>
+              <option value="gemini">gemini</option>
+              <option value="mock">mock(開発用・翻訳しません)</option>
+            </select>
+            <p class="settings-hint" id="engine-status"></p>
+          </div>
+
+          <div class="settings-group">
+            <label class="settings-label" for="openai-api-key-input">OpenAI API キー</label>
+            <div class="settings-row">
+              <input
+                class="settings-input"
+                id="openai-api-key-input"
+                type="password"
+                placeholder="sk-..."
+                autocomplete="off"
+              />
+              <button class="btn" id="openai-api-key-save-button">保存</button>
+            </div>
+            <p class="settings-hint" id="openai-api-key-status"></p>
+          </div>
+
+          <div class="settings-group">
+            <label class="settings-label" for="gemini-api-key-input">Gemini API キー</label>
+            <div class="settings-row">
+              <input
+                class="settings-input"
+                id="gemini-api-key-input"
+                type="password"
+                placeholder="AIza..."
+                autocomplete="off"
+              />
+              <button class="btn" id="gemini-api-key-save-button">保存</button>
+            </div>
+            <p class="settings-hint" id="gemini-api-key-status"></p>
+          </div>
+
+          <div class="settings-group">
+            <label class="settings-label" for="model-select">モデル</label>
+            <select class="settings-select" id="model-select"></select>
+            <p class="settings-hint" id="model-status"></p>
+          </div>
+
+          <div class="settings-group">
+            <label class="settings-label" for="prompt-input">翻訳プロンプト(空なら既定値)</label>
+            <textarea class="settings-input settings-textarea" id="prompt-input" rows="5"></textarea>
+            <div class="settings-row">
+              <button class="btn" id="prompt-save-button">保存</button>
+              <button class="btn" id="prompt-reset-button">既定に戻す</button>
+            </div>
+            <p class="settings-hint">
+              {lang_a} と {lang_b} は言語ペアの言語名に置換されます。HTML/Markdown
+              の書式保持ルールは自動で後ろに付きます
+            </p>
+            <p class="settings-hint" id="prompt-status"></p>
+          </div>
+        </section>
+      </main>
     </div>
-
-    <section class="panel" id="panel-history" role="tabpanel">
-      <div class="history-toolbar">
-        <span class="history-toolbar__count" id="history-count"></span>
-        <button class="btn btn--danger" id="clear-history-button">全削除</button>
-      </div>
-      <ul class="history-list" id="history-list"></ul>
-      <p class="panel__placeholder" id="history-empty" hidden>翻訳履歴はまだありません。</p>
-    </section>
-
-    <section class="panel" id="panel-settings" role="tabpanel" hidden>
-      <div class="settings-group">
-        <span class="settings-label">ホットキー</span>
-        <div class="settings-row">
-          <span class="hotkey-display" id="hotkey-display"></span>
-          <button class="btn" id="hotkey-change-button">変更</button>
-        </div>
-        <p class="settings-hint" id="hotkey-hint" hidden></p>
-      </div>
-
-      <div class="settings-group">
-        <span class="settings-label">言語ペア</span>
-        <div class="settings-row">
-          <select class="settings-select" id="lang-a-select">
-            <option value="日本語">日本語</option>
-            <option value="英語">英語</option>
-            <option value="中国語">中国語</option>
-            <option value="韓国語">韓国語</option>
-          </select>
-          <span>⇔</span>
-          <select class="settings-select" id="lang-b-select">
-            <option value="日本語">日本語</option>
-            <option value="英語">英語</option>
-            <option value="中国語">中国語</option>
-            <option value="韓国語">韓国語</option>
-          </select>
-        </div>
-        <p class="settings-hint" id="lang-status"></p>
-      </div>
-
-      <div class="settings-group">
-        <label class="settings-label" for="engine-select">翻訳エンジン</label>
-        <select class="settings-select" id="engine-select">
-          <option value="auto">auto(キーがあれば openai、無ければ gemini)</option>
-          <option value="openai">openai</option>
-          <option value="gemini">gemini</option>
-          <option value="mock">mock(開発用・翻訳しません)</option>
-        </select>
-        <p class="settings-hint" id="engine-status"></p>
-      </div>
-
-      <div class="settings-group">
-        <label class="settings-label" for="openai-api-key-input">OpenAI API キー</label>
-        <div class="settings-row">
-          <input
-            class="settings-input"
-            id="openai-api-key-input"
-            type="password"
-            placeholder="sk-..."
-            autocomplete="off"
-          />
-          <button class="btn" id="openai-api-key-save-button">保存</button>
-        </div>
-        <p class="settings-hint" id="openai-api-key-status"></p>
-      </div>
-
-      <div class="settings-group">
-        <label class="settings-label" for="gemini-api-key-input">Gemini API キー</label>
-        <div class="settings-row">
-          <input
-            class="settings-input"
-            id="gemini-api-key-input"
-            type="password"
-            placeholder="AIza..."
-            autocomplete="off"
-          />
-          <button class="btn" id="gemini-api-key-save-button">保存</button>
-        </div>
-        <p class="settings-hint" id="gemini-api-key-status"></p>
-      </div>
-
-      <div class="settings-group">
-        <label class="settings-label" for="model-input">モデル名(空なら既定値)</label>
-        <div class="settings-row">
-          <input class="settings-input" id="model-input" type="text" placeholder="gpt-4.1-mini" />
-          <button class="btn" id="model-save-button">保存</button>
-        </div>
-        <p class="settings-hint" id="model-status"></p>
-      </div>
-    </section>
 
     <div class="modal-overlay" id="clear-history-modal" hidden>
       <div class="modal" role="alertdialog" aria-labelledby="clear-history-modal-title">

@@ -25,7 +25,6 @@
   --font-size-2xl: 18px;
   --font-size-3xl: 21px;
 
-  --header-height: 28px;
 }
 
 @media (prefers-color-scheme: dark) {

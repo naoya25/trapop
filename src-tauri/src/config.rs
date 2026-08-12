@@ -4,11 +4,12 @@ use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
 
 const CONFIG_FILE: &str = "config.json";
-const DEFAULT_HOTKEY: &str = "shift+alt+super+KeyP";
 const DEFAULT_LANG_A: &str = "日本語";
 const DEFAULT_LANG_B: &str = "英語";
-pub const DEFAULT_POPUP_WIDTH: f64 = 420.0;
-pub const DEFAULT_POPUP_HEIGHT: f64 = 320.0;
+// tauri.conf.json の windows[0] の width/height と同値を保つこと
+// (conf のサイズで表示された直後に setup が set_size で上書きするため、ズレると起動時にリサイズが見える)
+pub const DEFAULT_WINDOW_WIDTH: f64 = 860.0;
+pub const DEFAULT_WINDOW_HEIGHT: f64 = 600.0;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -43,24 +44,27 @@ impl EngineChoice {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
-    #[serde(default = "default_hotkey")]
-    pub hotkey: String,
     #[serde(default)]
     pub engine_choice: EngineChoice,
     #[serde(default)]
     pub model_override: Option<String>,
+    // None = 組み込みプロンプトを使う。{lang_a}/{lang_b} が言語名に置換される
+    #[serde(default)]
+    pub custom_prompt: Option<String>,
     #[serde(default = "default_lang_a")]
     pub lang_a: String,
     #[serde(default = "default_lang_b")]
     pub lang_b: String,
-    #[serde(default = "default_popup_width")]
-    pub popup_width: f64,
-    #[serde(default = "default_popup_height")]
-    pub popup_height: f64,
+    #[serde(default = "default_window_width")]
+    pub window_width: f64,
+    #[serde(default = "default_window_height")]
+    pub window_height: f64,
 }
 
-fn default_hotkey() -> String {
-    DEFAULT_HOTKEY.to_string()
+// ウィンドウサイズの妥当性(有限かつ正)。save_window_size コマンドと
+// リサイズキャッシュの両方の書き手がこれを通す
+pub fn is_valid_window_size(width: f64, height: f64) -> bool {
+    width.is_finite() && height.is_finite() && width > 0.0 && height > 0.0
 }
 
 fn default_lang_a() -> String {
@@ -71,24 +75,24 @@ fn default_lang_b() -> String {
     DEFAULT_LANG_B.to_string()
 }
 
-fn default_popup_width() -> f64 {
-    DEFAULT_POPUP_WIDTH
+fn default_window_width() -> f64 {
+    DEFAULT_WINDOW_WIDTH
 }
 
-fn default_popup_height() -> f64 {
-    DEFAULT_POPUP_HEIGHT
+fn default_window_height() -> f64 {
+    DEFAULT_WINDOW_HEIGHT
 }
 
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            hotkey: default_hotkey(),
             engine_choice: EngineChoice::default(),
             model_override: None,
+            custom_prompt: None,
             lang_a: default_lang_a(),
             lang_b: default_lang_b(),
-            popup_width: default_popup_width(),
-            popup_height: default_popup_height(),
+            window_width: default_window_width(),
+            window_height: default_window_height(),
         }
     }
 }
@@ -116,11 +120,14 @@ pub fn save(app: &AppHandle, config: &AppConfig) -> Result<(), String> {
     // 壊れた JSON を読んで全設定が既定値に落ちるため、temp + rename で原子的に置換する。
     let tmp = path.with_extension("json.tmp");
     fs::write(&tmp, json).map_err(|e| e.to_string())?;
-    fs::rename(&tmp, &path).map_err(|e| e.to_string())
+    fs::rename(&tmp, &path).map_err(|e| {
+        let _ = fs::remove_file(&tmp);
+        e.to_string()
+    })
 }
 
-// 設定変更は read-modify-write なので、複数 popup からの同時保存(リサイズ等)で
-// 他フィールドを古い値へ巻き戻さないよう、プロセス内 lock で直列化する。
+// 設定変更は read-modify-write なので、コマンドの並行実行(リサイズ保存と設定保存の
+// 同時実行等)で他フィールドを古い値へ巻き戻さないよう、プロセス内 lock で直列化する。
 static UPDATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 pub fn update(
@@ -145,49 +152,52 @@ mod tests {
     #[test]
     fn falls_back_to_default_on_invalid_json() {
         let config = parse_config("not json");
-        assert_eq!(config.hotkey, DEFAULT_HOTKEY);
         assert_eq!(config.engine_choice, EngineChoice::Auto);
         assert_eq!(config.lang_a, DEFAULT_LANG_A);
         assert_eq!(config.lang_b, DEFAULT_LANG_B);
-        assert_eq!(config.popup_width, DEFAULT_POPUP_WIDTH);
-        assert_eq!(config.popup_height, DEFAULT_POPUP_HEIGHT);
+        assert_eq!(config.window_width, DEFAULT_WINDOW_WIDTH);
+        assert_eq!(config.window_height, DEFAULT_WINDOW_HEIGHT);
     }
 
     #[test]
     fn round_trips_through_json() {
         let config = AppConfig {
-            hotkey: "control+alt+KeyJ".to_string(),
             engine_choice: EngineChoice::Openai,
             model_override: Some("gpt-4.1".to_string()),
+            custom_prompt: Some("カジュアルに訳して。{lang_a}⇔{lang_b}".to_string()),
             lang_a: "中国語".to_string(),
             lang_b: "韓国語".to_string(),
-            popup_width: 500.0,
-            popup_height: 400.0,
+            window_width: 500.0,
+            window_height: 400.0,
         };
         let json = serde_json::to_string(&config).unwrap();
         let parsed = parse_config(&json);
 
-        assert_eq!(parsed.hotkey, config.hotkey);
         assert_eq!(parsed.engine_choice, EngineChoice::Openai);
         assert_eq!(parsed.model_override.as_deref(), Some("gpt-4.1"));
+        assert_eq!(
+            parsed.custom_prompt.as_deref(),
+            Some("カジュアルに訳して。{lang_a}⇔{lang_b}")
+        );
         assert_eq!(parsed.lang_a, "中国語");
         assert_eq!(parsed.lang_b, "韓国語");
-        assert_eq!(parsed.popup_width, 500.0);
-        assert_eq!(parsed.popup_height, 400.0);
+        assert_eq!(parsed.window_width, 500.0);
+        assert_eq!(parsed.window_height, 400.0);
     }
 
     #[test]
     fn missing_lang_fields_fall_back_to_defaults() {
-        let config = parse_config(r#"{"hotkey":"control+alt+KeyJ"}"#);
+        // 部分的な config(不足キーと未知キーの両方)から既定値へ落ちることを検証する
+        let config = parse_config(r#"{"unknown_key":"x"}"#);
         assert_eq!(config.lang_a, DEFAULT_LANG_A);
         assert_eq!(config.lang_b, DEFAULT_LANG_B);
     }
 
     #[test]
-    fn missing_popup_size_falls_back_to_defaults() {
-        let config = parse_config(r#"{"hotkey":"control+alt+KeyJ"}"#);
-        assert_eq!(config.popup_width, DEFAULT_POPUP_WIDTH);
-        assert_eq!(config.popup_height, DEFAULT_POPUP_HEIGHT);
+    fn missing_window_size_falls_back_to_defaults() {
+        let config = parse_config(r#"{"unknown_key":"x"}"#);
+        assert_eq!(config.window_width, DEFAULT_WINDOW_WIDTH);
+        assert_eq!(config.window_height, DEFAULT_WINDOW_HEIGHT);
     }
 
     #[test]

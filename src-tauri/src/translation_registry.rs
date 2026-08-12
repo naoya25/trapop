@@ -35,7 +35,7 @@ impl TranslationRegistry {
 
     // finish と同じ世代ガードを持つ。停止→即再翻訳の順でイベントが遅延到着しても、
     // 古い世代宛の cancel が新しいストリームを巻き込まないようにする。
-    // request_id が None のときは無条件(popup 破棄時の掃除用)。
+    // request_id が None のときは無条件(ウィンドウ破棄時の掃除用)。
     pub fn cancel(&self, label: &str, request_id: Option<u64>) {
         let mut inflight = self.inflight.lock().unwrap();
         let should_cancel = match (request_id, inflight.get(label)) {
@@ -66,8 +66,8 @@ mod tests {
         let (tx1, mut rx1) = oneshot::channel();
         let (tx2, _rx2) = oneshot::channel();
 
-        registry.begin("popup-1", 1, tx1);
-        registry.begin("popup-1", 2, tx2);
+        registry.begin("main", 1, tx1);
+        registry.begin("main", 2, tx2);
 
         assert!(
             rx1.try_recv().is_ok(),
@@ -81,11 +81,11 @@ mod tests {
         let (tx1, _rx1) = oneshot::channel();
         let (tx2, mut rx2) = oneshot::channel();
 
-        registry.begin("popup-1", 1, tx1);
-        registry.begin("popup-1", 2, tx2);
-        registry.finish("popup-1", 1);
+        registry.begin("main", 1, tx1);
+        registry.begin("main", 2, tx2);
+        registry.finish("main", 1);
 
-        registry.cancel("popup-1", None);
+        registry.cancel("main", None);
         assert!(
             rx2.try_recv().is_ok(),
             "generation 2 must still be tracked and cancellable after a stale finish() from generation 1"
@@ -97,15 +97,15 @@ mod tests {
         let registry = TranslationRegistry::default();
         let (tx2, mut rx2) = oneshot::channel();
 
-        registry.begin("popup-1", 2, tx2);
-        registry.cancel("popup-1", Some(1));
+        registry.begin("main", 2, tx2);
+        registry.cancel("main", Some(1));
 
         assert!(
             rx2.try_recv().is_err(),
             "a cancel targeting generation 1 must not cancel generation 2"
         );
 
-        registry.cancel("popup-1", Some(2));
+        registry.cancel("main", Some(2));
         assert!(
             rx2.try_recv().is_ok(),
             "a cancel targeting the current generation must go through"
@@ -148,7 +148,7 @@ mod tests {
         let tx1 = events_tx.clone();
         let handle1 = tokio::spawn(run_stream(
             r1,
-            "popup-1",
+            "main",
             1,
             vec!["A1", "A2", "A3", "A4", "A5"],
             tx1,
@@ -159,7 +159,7 @@ mod tests {
 
         let r2 = registry.clone();
         let tx2 = events_tx.clone();
-        run_stream(r2, "popup-1", 2, vec!["B1", "B2", "B3"], tx2, None).await;
+        run_stream(r2, "main", 2, vec!["B1", "B2", "B3"], tx2, None).await;
 
         let _ = handle1.await;
         drop(events_tx);

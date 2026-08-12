@@ -79,13 +79,28 @@ pub trait TranslationEngine: Send + Sync {
     );
 }
 
-pub fn system_prompt(lang_a: &str, lang_b: &str, is_html: bool) -> String {
-    let base = format!(
-        "あなたはプロの翻訳者です。入力テキストが{lang_a}であれば{lang_b}に、\
-        {lang_b}であれば{lang_a}に全文翻訳してください。どちらの言語でもない場合は{lang_a}に翻訳してください。\
-        要約・省略・意訳による情報の削減は禁止です。原文にある情報はすべて訳文に含めてください。\
-        出力は訳文のみとし、前置きや説明を含めないでください。"
-    );
+// 設定画面の placeholder 表示にも使うため、テンプレートとして公開する。
+// {lang_a}/{lang_b} は実行時に言語名へ置換される
+pub const DEFAULT_PROMPT_TEMPLATE: &str = "あなたはプロの翻訳者です。入力テキストが{lang_a}であれば{lang_b}に、\
+{lang_b}であれば{lang_a}に全文翻訳してください。どちらの言語でもない場合は{lang_a}に翻訳してください。\
+要約・省略・意訳による情報の削減は禁止です。原文にある情報はすべて訳文に含めてください。\
+出力は訳文のみとし、前置きや説明を含めないでください。";
+
+// custom_template はユーザー編集の翻訳ポリシー部分。HTML/Markdown の書式保持
+// ルールは編集対象にしない(消せると描画が壊れるため、常にここで後置する)
+pub fn system_prompt(
+    lang_a: &str,
+    lang_b: &str,
+    is_html: bool,
+    custom_template: Option<&str>,
+) -> String {
+    let template = custom_template
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .unwrap_or(DEFAULT_PROMPT_TEMPLATE);
+    let base = template
+        .replace("{lang_a}", lang_a)
+        .replace("{lang_b}", lang_b);
 
     if is_html {
         format!(
@@ -114,12 +129,43 @@ pub fn user_facing_api_error(provider: &str, status: u16) -> String {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn custom_prompt_replaces_language_placeholders() {
+        let prompt = system_prompt("日本語", "英語", false, Some("カジュアルに。{lang_a}⇔{lang_b}"));
+        assert!(prompt.starts_with("カジュアルに。日本語⇔英語"));
+    }
+
+    #[test]
+    fn custom_prompt_keeps_format_rules_appended() {
+        let plain = system_prompt("日本語", "英語", false, Some("カジュアルに"));
+        assert!(plain.contains("Markdown記法"));
+        let html = system_prompt("日本語", "英語", true, Some("カジュアルに"));
+        assert!(html.contains("入力はHTMLです"));
+    }
+
+    #[test]
+    fn blank_custom_prompt_falls_back_to_default() {
+        let with_blank = system_prompt("日本語", "英語", false, Some("   "));
+        let with_none = system_prompt("日本語", "英語", false, None);
+        assert_eq!(with_blank, with_none);
+        assert!(with_none.contains("あなたはプロの翻訳者です"));
+    }
+}
+
 pub struct ResolvedEngine {
     pub engine: Box<dyn TranslationEngine>,
     pub unavailable_reason: Option<String>,
 }
 
-pub fn resolve(choice: &str, model_override: Option<&str>) -> ResolvedEngine {
+pub fn resolve(
+    choice: &str,
+    model_override: Option<&str>,
+    custom_prompt: Option<&str>,
+) -> ResolvedEngine {
     let missing_key = |provider: &str| {
         Some(format!(
             "{provider} のAPIキーが未設定です。設定画面から登録してください。"
@@ -131,7 +177,7 @@ pub fn resolve(choice: &str, model_override: Option<&str>) -> ResolvedEngine {
             engine: Box::new(mock::MockEngine),
             unavailable_reason: None,
         },
-        "openai" => match openai::OpenAiEngine::from_environment(model_override) {
+        "openai" => match openai::OpenAiEngine::from_environment(model_override, custom_prompt) {
             Ok(engine) => ResolvedEngine {
                 engine: Box::new(engine),
                 unavailable_reason: None,
@@ -141,7 +187,7 @@ pub fn resolve(choice: &str, model_override: Option<&str>) -> ResolvedEngine {
                 unavailable_reason: missing_key("OpenAI"),
             },
         },
-        "gemini" => match gemini::GeminiEngine::from_environment(model_override) {
+        "gemini" => match gemini::GeminiEngine::from_environment(model_override, custom_prompt) {
             Ok(engine) => ResolvedEngine {
                 engine: Box::new(engine),
                 unavailable_reason: None,
@@ -155,13 +201,15 @@ pub fn resolve(choice: &str, model_override: Option<&str>) -> ResolvedEngine {
             // ここに来てよいのは "auto" だけ。エンジン追加時に match 漏れのまま
             // 黙って auto 挙動になるのを開発中に検出する。
             debug_assert!(other == "auto", "unknown engine choice: {other}");
-            if let Ok(engine) = openai::OpenAiEngine::from_environment(model_override) {
+            if let Ok(engine) = openai::OpenAiEngine::from_environment(model_override, custom_prompt)
+            {
                 return ResolvedEngine {
                     engine: Box::new(engine),
                     unavailable_reason: None,
                 };
             }
-            if let Ok(engine) = gemini::GeminiEngine::from_environment(model_override) {
+            if let Ok(engine) = gemini::GeminiEngine::from_environment(model_override, custom_prompt)
+            {
                 return ResolvedEngine {
                     engine: Box::new(engine),
                     unavailable_reason: None,

@@ -406,6 +406,16 @@ body {
   flex: 1;
 }
 
+.status-bar__target-select {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--font-size-sm);
+}
+
 /* --- 設定ビュー --- */
 
 #view-settings {

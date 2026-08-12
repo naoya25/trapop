@@ -51,13 +51,14 @@ impl OpenAiEngine {
         input: &TranslationInput,
         lang_a: &str,
         lang_b: &str,
+        target: Option<&str>,
         tx: &UnboundedSender<TranslationChunk>,
     ) -> Result<(), String> {
         let body = serde_json::json!({
             "model": self.model,
             "stream": true,
             "messages": [
-                {"role": "system", "content": super::system_prompt(lang_a, lang_b, input.is_html(), self.custom_prompt.as_deref())},
+                {"role": "system", "content": super::system_prompt(lang_a, lang_b, input.is_html(), self.custom_prompt.as_deref(), target)},
                 {"role": "user", "content": input.body()},
             ],
         });
@@ -110,9 +111,13 @@ impl TranslationEngine for OpenAiEngine {
         input: &TranslationInput,
         lang_a: &str,
         lang_b: &str,
+        target: Option<&str>,
         tx: UnboundedSender<TranslationChunk>,
     ) {
-        if let Err(err) = self.stream_translation(input, lang_a, lang_b, &tx).await {
+        if let Err(err) = self
+            .stream_translation(input, lang_a, lang_b, target, &tx)
+            .await
+        {
             let _ = tx.send(TranslationChunk::error(format!(
                 "翻訳中にエラーが発生しました: {err}"
             )));

@@ -56,11 +56,12 @@ impl GeminiEngine {
         input: &TranslationInput,
         lang_a: &str,
         lang_b: &str,
+        target: Option<&str>,
         tx: &UnboundedSender<TranslationChunk>,
     ) -> Result<(), String> {
         let body = serde_json::json!({
             "systemInstruction": {
-                "parts": [{"text": super::system_prompt(lang_a, lang_b, input.is_html(), self.custom_prompt.as_deref())}],
+                "parts": [{"text": super::system_prompt(lang_a, lang_b, input.is_html(), self.custom_prompt.as_deref(), target)}],
             },
             "contents": [
                 {"role": "user", "parts": [{"text": input.body()}]},
@@ -120,9 +121,13 @@ impl TranslationEngine for GeminiEngine {
         input: &TranslationInput,
         lang_a: &str,
         lang_b: &str,
+        target: Option<&str>,
         tx: UnboundedSender<TranslationChunk>,
     ) {
-        if let Err(err) = self.stream_translation(input, lang_a, lang_b, &tx).await {
+        if let Err(err) = self
+            .stream_translation(input, lang_a, lang_b, target, &tx)
+            .await
+        {
             let _ = tx.send(TranslationChunk::error(format!(
                 "翻訳中にエラーが発生しました: {err}"
             )));
@@ -244,8 +249,8 @@ mod tests {
 
     #[test]
     fn html_system_prompt_extends_plain_text_prompt() {
-        let plain = super::super::system_prompt("日本語", "英語", false, None);
-        let html = super::super::system_prompt("日本語", "英語", true, None);
+        let plain = super::super::system_prompt("日本語", "英語", false, None, None);
+        let html = super::super::system_prompt("日本語", "英語", true, None, None);
         assert!(html.contains("HTML"));
         assert!(plain.contains("日本語"));
         assert!(plain.contains("英語"));
@@ -253,7 +258,7 @@ mod tests {
 
     #[test]
     fn bidirectional_prompt_mentions_both_languages_and_fallback() {
-        let prompt = super::super::system_prompt("日本語", "英語", false, None);
+        let prompt = super::super::system_prompt("日本語", "英語", false, None, None);
         assert!(prompt.contains("日本語であれば英語に"));
         assert!(prompt.contains("英語であれば日本語に"));
         assert!(prompt.contains("どちらの言語でもない場合は日本語に"));
@@ -261,7 +266,7 @@ mod tests {
 
     #[test]
     fn plain_text_prompt_forbids_html_tags() {
-        let prompt = super::super::system_prompt("日本語", "英語", false, None);
+        let prompt = super::super::system_prompt("日本語", "英語", false, None, None);
         assert!(prompt.contains("HTMLタグは出力に一切含めないでください"));
         assert!(prompt.contains("<div>"));
     }

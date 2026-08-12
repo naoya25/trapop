@@ -4,6 +4,7 @@ import { marked } from "marked";
 import { htmlLooksRich, safeStreamPreview } from "../main/preview";
 
 type EngineChoice = "auto" | "openai" | "gemini" | "mock";
+type TranslationTarget = "auto" | "lang_a" | "lang_b";
 
 type SettingsView = {
   engine_choice: EngineChoice;
@@ -15,6 +16,7 @@ type SettingsView = {
   effective_engine_name: string;
   lang_a: string;
   lang_b: string;
+  translation_target: TranslationTarget;
 };
 
 type SourceKind = "pasted" | "typed";
@@ -41,6 +43,9 @@ const statusState = document.getElementById("status-state") as HTMLElement;
 const toggleSourceButton = document.getElementById("toggle-source") as HTMLButtonElement;
 const copyButton = document.getElementById("copy-translation") as HTMLButtonElement;
 const viewMeta = document.getElementById("view-meta") as HTMLElement;
+const translationTargetSelect = document.getElementById(
+  "translation-target-select",
+) as HTMLSelectElement;
 
 const SOURCE_LABEL: Record<SourceKind, string> = {
   pasted: "貼り付け",
@@ -403,13 +408,36 @@ copyButton.addEventListener("click", () => {
   void copyRichTranslation();
 });
 
-// --- 設定(表示専用。エンジン・言語ペアはメイン設定を共有) ---
+// --- 設定(表示専用。エンジン・言語ペアはメイン設定を共有。翻訳先トグルのみ操作可) ---
+
+function updateTranslationTargetOptions(langA: string, langB: string) {
+  const options = translationTargetSelect.options;
+  for (const option of options) {
+    if (option.value === "lang_a") {
+      option.textContent = `${langA}に`;
+    } else if (option.value === "lang_b") {
+      option.textContent = `${langB}に`;
+    }
+  }
+}
 
 async function loadSettings() {
   const settings = await invoke<SettingsView>("get_settings");
   currentSettings = settings;
   renderViewMeta();
+  updateTranslationTargetOptions(settings.lang_a, settings.lang_b);
+  translationTargetSelect.value = settings.translation_target;
 }
+
+translationTargetSelect.addEventListener("change", () => {
+  invoke("set_translation_target", { target: translationTargetSelect.value }).then(
+    () => loadSettings(),
+    (error: unknown) => {
+      console.error("翻訳先の保存に失敗", error);
+      void loadSettings();
+    },
+  );
+});
 
 // --- リンク・Esc・起動時初期化 ---
 

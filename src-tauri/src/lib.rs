@@ -52,6 +52,7 @@ struct SettingsView {
     effective_engine_name: &'static str,
     lang_a: String,
     lang_b: String,
+    translation_target: &'static str,
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -116,6 +117,7 @@ async fn get_settings(
             effective_engine_name,
             lang_a: cfg.lang_a,
             lang_b: cfg.lang_b,
+            translation_target: cfg.translation_target.as_str(),
         }
     })
     .await
@@ -146,6 +148,18 @@ async fn set_lang_pair(app: AppHandle, lang_a: String, lang_b: String) -> Result
             cfg.lang_b = lang_b;
         })
         .map(|_| ())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// プロンプトは翻訳実行時に組むため、エンジン再構築は不要(config 保存のみ)
+#[tauri::command]
+async fn set_translation_target(app: AppHandle, target: String) -> Result<(), String> {
+    let translation_target = config::TranslationTarget::parse(&target)?;
+
+    tauri::async_runtime::spawn_blocking(move || {
+        config::update(&app, |cfg| cfg.translation_target = translation_target).map(|_| ())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -359,9 +373,14 @@ async fn start_translation(
 
     let lang_a = cfg.lang_a.clone();
     let lang_b = cfg.lang_b.clone();
+    let target = match cfg.translation_target {
+        config::TranslationTarget::Auto => None,
+        config::TranslationTarget::LangA => Some(cfg.lang_a.clone()),
+        config::TranslationTarget::LangB => Some(cfg.lang_b.clone()),
+    };
     let engine_task = tokio::spawn(async move {
         engine_handle
-            .translate(&translation_input, &lang_a, &lang_b, tx)
+            .translate(&translation_input, &lang_a, &lang_b, target.as_deref(), tx)
             .await;
     });
 
@@ -456,6 +475,7 @@ pub fn run() {
             clear_history,
             get_settings,
             set_lang_pair,
+            set_translation_target,
             save_window_size,
             set_engine_choice,
             set_model_override,

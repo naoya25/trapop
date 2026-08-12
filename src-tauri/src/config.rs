@@ -13,6 +13,34 @@ pub const DEFAULT_WINDOW_HEIGHT: f64 = 600.0;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum TranslationTarget {
+    #[default]
+    Auto,
+    LangA,
+    LangB,
+}
+
+impl TranslationTarget {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::LangA => "lang_a",
+            Self::LangB => "lang_b",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "auto" => Ok(Self::Auto),
+            "lang_a" => Ok(Self::LangA),
+            "lang_b" => Ok(Self::LangB),
+            other => Err(format!("未知の翻訳先指定です: {other}")),
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum EngineChoice {
     #[default]
     Auto,
@@ -55,6 +83,8 @@ pub struct AppConfig {
     pub lang_a: String,
     #[serde(default = "default_lang_b")]
     pub lang_b: String,
+    #[serde(default)]
+    pub translation_target: TranslationTarget,
     #[serde(default = "default_window_width")]
     pub window_width: f64,
     #[serde(default = "default_window_height")]
@@ -91,6 +121,7 @@ impl Default for AppConfig {
             custom_prompt: None,
             lang_a: default_lang_a(),
             lang_b: default_lang_b(),
+            translation_target: TranslationTarget::default(),
             window_width: default_window_width(),
             window_height: default_window_height(),
         }
@@ -167,6 +198,7 @@ mod tests {
             custom_prompt: Some("カジュアルに訳して。{lang_a}⇔{lang_b}".to_string()),
             lang_a: "中国語".to_string(),
             lang_b: "韓国語".to_string(),
+            translation_target: TranslationTarget::LangB,
             window_width: 500.0,
             window_height: 400.0,
         };
@@ -181,6 +213,7 @@ mod tests {
         );
         assert_eq!(parsed.lang_a, "中国語");
         assert_eq!(parsed.lang_b, "韓国語");
+        assert_eq!(parsed.translation_target, TranslationTarget::LangB);
         assert_eq!(parsed.window_width, 500.0);
         assert_eq!(parsed.window_height, 400.0);
     }
@@ -191,6 +224,7 @@ mod tests {
         let config = parse_config(r#"{"unknown_key":"x"}"#);
         assert_eq!(config.lang_a, DEFAULT_LANG_A);
         assert_eq!(config.lang_b, DEFAULT_LANG_B);
+        assert_eq!(config.translation_target, TranslationTarget::Auto);
     }
 
     #[test]
@@ -216,5 +250,22 @@ mod tests {
     #[test]
     fn rejects_unknown_engine_choice() {
         assert!(EngineChoice::parse("anthropic").is_err());
+    }
+
+    #[test]
+    fn translation_target_round_trips_through_str() {
+        for target in [
+            TranslationTarget::Auto,
+            TranslationTarget::LangA,
+            TranslationTarget::LangB,
+        ] {
+            let parsed = TranslationTarget::parse(target.as_str()).unwrap();
+            assert_eq!(parsed, target);
+        }
+    }
+
+    #[test]
+    fn rejects_unknown_translation_target() {
+        assert!(TranslationTarget::parse("lang_c").is_err());
     }
 }

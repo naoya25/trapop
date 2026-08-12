@@ -13,6 +13,7 @@ type HistoryRecord = {
 };
 
 type EngineChoice = "auto" | "openai" | "gemini" | "mock";
+type TranslationTarget = "auto" | "lang_a" | "lang_b";
 
 type SettingsView = {
   engine_choice: EngineChoice;
@@ -24,6 +25,7 @@ type SettingsView = {
   effective_engine_name: string;
   lang_a: string;
   lang_b: string;
+  translation_target: TranslationTarget;
 };
 
 type SourceKind = "pasted" | "typed";
@@ -94,6 +96,9 @@ const statusState = document.getElementById("status-state") as HTMLElement;
 const toggleSourceButton = document.getElementById("toggle-source") as HTMLButtonElement;
 const copyButton = document.getElementById("copy-translation") as HTMLButtonElement;
 const viewMeta = document.getElementById("view-meta") as HTMLElement;
+const translationTargetSelect = document.getElementById(
+  "translation-target-select",
+) as HTMLSelectElement;
 
 const SOURCE_LABEL: Record<SourceKind, string> = {
   pasted: "貼り付け",
@@ -849,6 +854,17 @@ function rebuildModelOptions(engine: EngineChoice, override: string | null) {
   modelSelect.value = override ?? "";
 }
 
+function updateTranslationTargetOptions(langA: string, langB: string) {
+  const options = translationTargetSelect.options;
+  for (const option of options) {
+    if (option.value === "lang_a") {
+      option.textContent = `${langA}に`;
+    } else if (option.value === "lang_b") {
+      option.textContent = `${langB}に`;
+    }
+  }
+}
+
 async function loadSettings() {
   const settings = await invoke<SettingsView>("get_settings");
   currentSettings = settings;
@@ -861,10 +877,22 @@ async function loadSettings() {
   openaiApiKeyStatus.textContent = settings.has_openai_key ? "登録済み: ●●●●●●●●" : "未登録";
   geminiApiKeyStatus.textContent = settings.has_gemini_key ? "登録済み: ●●●●●●●●" : "未登録";
   engineStatus.textContent = engineError || `実効エンジン: ${settings.effective_engine_name}`;
+  updateTranslationTargetOptions(settings.lang_a, settings.lang_b);
+  translationTargetSelect.value = settings.translation_target;
   if (activeHistoryId === null) {
     renderViewMeta();
   }
 }
+
+translationTargetSelect.addEventListener("change", () => {
+  invoke("set_translation_target", { target: translationTargetSelect.value }).then(
+    () => refreshSettings(),
+    (error: unknown) => {
+      console.error("翻訳先の保存に失敗", error);
+      void refreshSettings();
+    },
+  );
+});
 
 function saveLangPair() {
   invoke("set_lang_pair", {

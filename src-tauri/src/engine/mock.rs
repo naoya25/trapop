@@ -17,6 +17,7 @@ impl TranslationEngine for MockEngine {
         input: &TranslationInput,
         _lang_a: &str,
         _lang_b: &str,
+        _target: Option<&str>,
         tx: UnboundedSender<TranslationChunk>,
     ) {
         let body = match input {
@@ -60,6 +61,7 @@ mod tests {
                 &TranslationInput::PlainText("hello world".to_string()),
                 "日本語",
                 "英語",
+                None,
                 tx,
             )
             .await;
@@ -84,7 +86,13 @@ mod tests {
         let html = "<ul><li>one</li><li>two</li></ul><p><strong>bold</strong></p>".to_string();
 
         engine
-            .translate(&TranslationInput::Html(html.clone()), "日本語", "英語", tx)
+            .translate(
+                &TranslationInput::Html(html.clone()),
+                "日本語",
+                "英語",
+                None,
+                tx,
+            )
             .await;
 
         let mut received_text = String::new();

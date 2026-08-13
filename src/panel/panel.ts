@@ -457,6 +457,18 @@ document.addEventListener("click", (event) => {
   }
 });
 
+// パネルは destroy されず hide/show で再利用されるため、ロード時の focus() だけでは
+// 再表示時に caret が戻らない。ネイティブ側で key window になったタイミング
+// (= window の focus イベント)で入力欄へフォーカスを戻す。
+// すでに他要素を触っている最中は奪わない(訳文の選択・ボタン操作を邪魔しない)
+window.addEventListener("focus", () => {
+  const active = document.activeElement;
+  if (active && active !== document.body && active !== pasteInput) {
+    return;
+  }
+  pasteInput.focus();
+});
+
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     event.preventDefault();

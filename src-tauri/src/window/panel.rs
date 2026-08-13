@@ -42,7 +42,8 @@ pub fn show_or_create_panel(app: &AppHandle) -> tauri::Result<()> {
                     .full_screen_auxiliary()
                     .into(),
             );
-            panel.show();
+            activate_app();
+            panel.show_and_make_key();
             schedule_space_pin(app, label);
             return Ok(());
         }
@@ -117,11 +118,33 @@ fn spawn_panel(app: &AppHandle) -> tauri::Result<()> {
     });
     panel.set_event_handler(Some(handler.as_ref()));
 
-    panel.show();
+    activate_app();
+    panel.show_and_make_key();
 
     schedule_space_pin(app, label);
 
     Ok(())
+}
+
+// パネルにキーボード入力を通すには2条件を両方満たす必要がある。
+// (1) パネル自身が key window であること → show() は orderFrontRegardless しか
+//     呼ばないため key にならない。show_and_make_key() で makeKeyWindow まで行う。
+// (2) アプリ自体がアクティブであること → trapop://new は Raycast など他アプリから
+//     open されるので TraPoP は非アクティブのまま。key window でも前面アプリに
+//     キーストロークを取られるため、ここで明示的にアクティブ化する。
+//
+// activate()(macOS 14+)は cooperative activation でシステムに無視されうるので、
+// 確実に前面へ出す activateIgnoringOtherApps を使う(deprecated だが挙動が確実)。
+fn activate_app() {
+    // RunEvent ハンドラ = メインスレッドから呼ばれる想定。取れないときは
+    // 何もしない(key window 化だけは走るのでフォーカスが完全に死ぬことはない)
+    // tauri_panel! マクロが同名を import 済みのため、ここはフルパスで参照する
+    let Some(mtm) = tauri_nspanel::objc2::MainThreadMarker::new() else {
+        return;
+    };
+    #[allow(deprecated)]
+    tauri_nspanel::objc2_app_kit::NSApplication::sharedApplication(mtm)
+        .activateIgnoringOtherApps(true);
 }
 
 fn schedule_space_pin(app: &AppHandle, label: String) {

@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_nspanel::{
     tauri_panel, CollectionBehavior, ManagerExt, PanelLevel, StyleMask, WebviewWindowExt,
 };
@@ -34,6 +34,11 @@ static PANEL_COUNTER: AtomicU32 = AtomicU32::new(0);
 pub fn show_or_create_panel(app: &AppHandle) -> tauri::Result<()> {
     if let Some(label) = find_hidden_panel(app) {
         if let Ok(panel) = app.get_webview_panel(&label) {
+            // 再利用パネルには前回の翻訳内容が webview に残っている。
+            // show 前に reset イベントを送り、まっさらな新規状態に戻してから出す
+            if let Some(window) = app.get_webview_window(&label) {
+                let _ = window.emit("panel-reset", ());
+            }
             // 前回表示時の固定(managed)が残ったまま show すると元の Space に
             // 出てしまう。全 Space 参加へ戻して現在の Space に出し、固定し直す
             panel.set_collection_behavior(

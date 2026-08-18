@@ -476,7 +476,21 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
+// パネルは destroy されず hide/show で再利用されるため、再表示時に前回の翻訳が
+// 残る。ネイティブ側が show 直前に panel-reset を emit するので、受けて初期化する
+function listenForPanelReset() {
+  void getCurrentWindow()
+    .listen("panel-reset", () => {
+      resetToNewTranslation();
+      void loadSettings();
+    })
+    .catch((error: unknown) => {
+      console.error("panel-reset の購読に失敗", error);
+    });
+}
+
 listenForTranslationChunks();
+listenForPanelReset();
 showState("idle");
 resetToNewTranslation();
 void loadSettings();
